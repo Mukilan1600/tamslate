@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from train import Config, generate_masks
+from utils import Config, generate_masks
+
 
 class SelfAttentionHead(nn.Module):
     """ one head of self-attention """
@@ -189,7 +190,7 @@ class Decoder(nn.Module):
 
     def forward(self, x, x_mask, ca, ca_mask):
         B, T = x.shape
-
+        
         tok_emb = self.input_embedding(x)
         pos_emb = self.position_embedding(torch.arange(T, device=Config.device))
 
@@ -212,7 +213,7 @@ class BigramLanguageModel(nn.Module):
         self.decoder = Decoder(Config.vocab_Size)
 
     def forward(self, x, x_mask, y, y_mask, ca_mask, targets=None):
-
+        
         # Encoder
         ca_x = self.encoder(y, y_mask)
 
