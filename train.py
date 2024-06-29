@@ -1,14 +1,15 @@
-from model import BigramLanguageModel
 import tiktoken
 from datasets import load_dataset
-import numpy as np
+from collections import namedtuple
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from collections import namedtuple
+import math
 
 torch.manual_seed(1337)
 torch.cuda.manual_seed(1337)
+
+
 
 gpt_4o_enc = tiktoken.encoding_for_model("gpt-4o")
 # In production, load the arguments directly instead of accessing private attributes
@@ -33,7 +34,7 @@ encode = lambda x: enc.encode(x, allowed_special='all')
 decode = lambda x: enc.decode(x)
 
 # hyperparameters
-batch_size = 32 # how many independent sequences will we process in parallel?
+batch_size = 16 # how many independent sequences will we process in parallel?
 block_size = 256
 vocab_Size = enc.n_vocab
 max_iters = 200000
@@ -121,11 +122,270 @@ class DataLoader():
 
     return DataLoader.DataBatch(xo, t_m, xi, e_m, ca_m, y)
   
+'''Model'''
+class SelfAttentionHead(nn.Module):
+    """ one head of self-attention """
+
+    def __init__(self, head_size):
+        super().__init__()
+
+        self.key = nn.Linear(n_embd, head_size, bias=False)
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, mask):
+
+        B,T,C = x.shape
+
+        k = self.key(x)   # (B,T,C)
+        q = self.query(x) # (B,T,C)
+        v = self.value(x) # (B,T,C)
+
+        # compute attention scores ("affinities")
+        wei = q @ k.transpose(-2,-1) * C**-0.5 # (B, T, C) @ (B, C, T) -> (B, T, T)
+
+        wei = wei.masked_fill(mask == 0, float(-1e9)) # (B, T, T)
+
+        wei = F.softmax(wei, dim=-1) # (B, T, T)
+        wei = self.dropout(wei)
+
+        # perform the weighted aggregation of the values
+        out = wei @ v # (B, T, T) @ (B, T, C) -> (B, T, C)
+
+        return out
+
+
+
+class CrossAttentionHead(nn.Module):
+    """ one head of self-attention """
+
+    def __init__(self, head_size):
+        super().__init__()
+
+        self.key = nn.Linear(n_embd, head_size, bias=False)
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, y, mask):
+        B,T,C = x.shape
+
+        k = self.key(y)   # (B,T,C)
+        q = self.query(x) # (B,T,C)
+        v = self.value(y) # (B,T,C)
+
+
+        # compute attention scores ("affinities")
+        wei = q @ k.transpose(-2,-1) * C**-0.5 # (B, T, C) @ (B, C, T) -> (B, T, T)
+
+
+        wei = wei.masked_fill(mask == 0, float(-1e9)) # (B, T, T)
+
+        wei = F.softmax(wei, dim=-1) # (B, T, T)
+        wei = self.dropout(wei)
+
+        # perform the weighted aggregation of the values
+        out = wei @ v # (B, T, T) @ (B, T, C) -> (B, T, C)
+        return out
+
+class MultiHeadSelfAttention(nn.Module):
+    """ multiple heads of self-attention in parallel """
+
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([SelfAttentionHead(head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(n_embd, n_embd)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, mask):
+        out = torch.cat([h(x, mask) for h in self.heads], dim=-1)
+        out = self.dropout(self.proj(out))
+        return out
+
+class MultiHeadCrossAttention(nn.Module):
+    """ multiple heads of self-attention in parallel """
+
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([CrossAttentionHead(head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(n_embd, n_embd)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, y, mask):
+        out = torch.cat([h(x, y, mask) for h in self.heads], dim=-1)
+        out = self.dropout(self.proj(out))
+        return out
+    
+class FeedFoward(nn.Module):
+    """ a simple linear layer followed by a non-linearity """
+
+    def __init__(self, n_embd):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, 4 * n_embd),
+            nn.ReLU(),
+            nn.Linear(4 * n_embd, n_embd),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+    
+class EncoderBlock(nn.Module):
+    def __init__(self):
+        super().__init__()
+        head_size = n_embd // n_head
+        self.self_att= MultiHeadSelfAttention(n_head, head_size)
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
+        self.ffwd = FeedFoward(n_embd)
+
+    def forward(self, o):
+        x, m = o["x"], o["m"]
+
+        x = x + self.self_att(self.ln1(x), m)
+        x = x + self.ffwd(self.ln2(x))
+
+        return {"x":x, "m":m}
+
+
+class DecoderBlock(nn.Module):
+    def __init__(self):
+        super().__init__()
+        head_size = n_embd // n_head
+        self.self_att = MultiHeadSelfAttention(n_head, head_size)
+        self.cross_att = MultiHeadCrossAttention(n_head, head_size)
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
+        self.ln3 = nn.LayerNorm(n_embd)
+        self.ffwd = FeedFoward(n_embd)
+
+        self.register_buffer("tril", torch.tril(torch.ones(block_size, block_size, dtype=torch.int, device=device)))
+
+
+    def forward(self, o):
+
+        x, x_m, ca, ca_m = o["x"], o["x_m"], o["ca"], o["ca_m"]
+
+        x = x + self.self_att(self.ln1(x), x_m & self.tril)
+        x = x + self.cross_att(self.ln2(x), ca, ca_m)
+        x = x + self.ffwd(self.ln3(x))
+
+        return {"x":x, "x_m":x_m, "ca":ca, "ca_m":ca_m}
+
+class Encoder(nn.Module):
+    def __init__(self, vocab_size):
+        super().__init__()
+
+        self.input_emb = nn.Embedding(vocab_size, n_embd)
+        self.position_emb = nn.Embedding(block_size, n_embd)
+        self.blocks = nn.Sequential(*[EncoderBlock() for _ in range(n_layer)])
+
+    def forward(self, x, mask):
+        B, T = x.shape
+
+        tok_emb = self.input_emb(x) # B, T, C
+        pos_emb = self.position_emb(torch.arange(T, device=device)) # T, C
+
+        x = tok_emb + pos_emb # B, T, C
+
+        o = {"x": x, "m": mask}
+        x = self.blocks(o)["x"]
+
+        return x
+
+class Decoder(nn.Module):
+    def __init__(self, vocab_size):
+        super().__init__()
+
+        self.input_embedding = nn.Embedding(vocab_size, n_embd)
+        self.position_embedding = nn.Embedding(block_size, n_embd)
+        self.blocks = nn.Sequential(*[DecoderBlock() for _ in range(n_layer)])
+        self.ln_f = nn.LayerNorm(n_embd)
+        self.lm_head = nn.Linear(n_embd, vocab_size)
+
+    def forward(self, x, x_mask, ca, ca_mask):
+        B, T = x.shape
+
+        tok_emb = self.input_embedding(x)
+        pos_emb = self.position_embedding(torch.arange(T, device=device))
+
+        x = tok_emb + pos_emb
+        o = {"x": x, "x_m": x_mask, "ca": ca, "ca_m": ca_mask}
+        x = self.blocks(o)["x"]
+
+        x = self.ln_f(x)
+        x = self.lm_head(x)
+
+        return x
+
+# super simple bigram model
+class BigramLanguageModel(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+        # each token directly reads off the logits for the next token from a lookup table
+        self.encoder = Encoder(enc.n_vocab)
+        self.decoder = Decoder(enc.n_vocab)
+
+    def forward(self, x, x_mask, y, y_mask, ca_mask, targets=None):
+
+        # Encoder
+        ca_x = self.encoder(y, y_mask)
+
+        logits = self.decoder(x, x_mask, ca_x, ca_mask)
+
+        if targets is None:
+            loss = None
+        else:
+            B, T, C = logits.shape
+            logits = logits.view(B*T, C)
+            targets = targets.view(B*T)
+            loss = F.cross_entropy(logits, targets, ignore_index=PAD_TOKEN)
+
+        return logits, loss
+
+    def generate(self, eng, eng_l, idx, max_new_tokens):
+        # idx is (B, T) array of indices in the current context
+        END_TOK = encode('<|END|>')[0]
+        for _ in range(max_new_tokens):
+
+            # crop idx to the last block_size tokens
+            idx_cond = idx[:, -block_size:]
+            idx_pad = torch.tensor([[*x, *[PAD_TOKEN for _ in range(block_size-len(x))]] for x in idx_cond], dtype=torch.long, device=device)
+
+            out_m, eng_m, ca_m = generate_masks(eng, idx_cond)
+
+
+
+
+            # get the predictions
+            logits, loss = self(idx_pad, out_m, eng, eng_m, ca_m)
+            # focus only on the last time step
+            logits = logits[:, len(idx_cond[0])-1, :] # becomes (B, C)
+            # apply softmax to get probabilities
+            probs = F.softmax(logits, dim=-1) # (B, C)
+
+
+            # sample from the distribution
+            idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
+
+            # append sampled index to the running sequence
+            idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
+
+            if idx_next == END_TOK:
+              break
+        return idx
+"""--------------------"""
+  
 torch.set_float32_matmul_precision("high")
 
 model = BigramLanguageModel()
 model = model.to(device)
-model = torch.compile(model)
+# model = torch.compile(model)
 
 # Print the model size and parameter size
 param_size = 0
@@ -137,10 +397,29 @@ for buffer in model.buffers():
 
 size_all_mb = (param_size + buffer_size) / 1024**2
 
-print(f'Model size: {size_all_mb:.3f}MB, Params: {sum(p.numel() for p in model.parameters())/1e6, 'M'}')
+print(f'Model size: {size_all_mb:.3f}MB, Params: {sum(p.numel() for p in model.parameters())/1e6}M ')
 
 train_dl = DataLoader('train')
 val_dl = DataLoader('validation')
+
+max_lr = 3e-5
+min_lr = max_lr * 0.1
+warmup_steps = 10
+max_steps = warmup_steps * 10
+
+def get_lr(step):
+    if step < warmup_steps:
+        return max_lr * ((step + 1)/warmup_steps)
+    
+    if step > max_steps:
+        return min_lr
+    
+    decay_ratio = (step - warmup_steps)/(max_steps - warmup_steps)
+    assert 0 <= decay_ratio <= 1
+
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+    return min_lr + coeff * (max_lr - min_lr)
+    
 
 @torch.no_grad()
 def estimate_loss():
@@ -167,7 +446,7 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 
 min_loss = 12
 Xo, XoM, Xi, XiM, CaM, Y = train_dl.get_next_batch()
-for iter in range(40):
+for step in range(40):
     t0 = time.time()
     # sample a batch of data
     optimizer.zero_grad(set_to_none=True)
@@ -175,8 +454,13 @@ for iter in range(40):
       # evaluate the loss
       logits, loss = model(Xo, XoM, Xi, XiM, CaM, Y)
     loss.backward()
+    norm = torch.nn.utils.clip_grad_norm(model.parameters() , 1.0)
+    lr = get_lr(step)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+
     optimizer.step()
     torch.cuda.synchronize()
     t1 = time.time()
     dt = (t1 - t0)*1000
-    print(f"Step {iter}, loss: {loss.item():.2f}, dt: {dt:.2f}")
+    print(f"Step {step:4d} | norm: {norm:.4f} | lr: {lr:.6f} | loss: {loss.item():.2f} | dt: {dt:.2f}")
