@@ -1,10 +1,28 @@
 import torch
+import string
+
+# Define the Unicode range for Tamil characters
+tamil_range_start = 0x0B80
+tamil_range_end = 0x0BFF
+
+# Set of punctuation characters for quick lookup
+punctuation_set = set(string.punctuation)
+special_tokens = ["<|PAD|>", "<|START|>", "<|END|>"]
+
+# Combined filter set for Characters, punctuation, and space characters
+vocab = [*special_tokens, *sorted(list(set(string.ascii_letters) | {chr(i) for i in range(tamil_range_start, tamil_range_end + 1)} | set(string.digits) | punctuation_set | {' '}))]
+
+kv = {v:k for k,v in enumerate(vocab)}
+vk = {k:v for k,v in enumerate(vocab)}
+
+encode = lambda s: [kv[c] for c in s] # encoder: take a string, output a list of integers
+decode = lambda s: [vk[c] for c in s] # encoder: take a string, output a list of integers
 
 # hyperparameters
 class Config:
-    batch_size = 24 # how many independent sequences will we process in parallel?
+    batch_size = 64 # how many independent sequences will we process in parallel?
     block_size = 256
-    vocab_Size = 200022
+    vocab_size = len(vocab)
     max_steps = 20000
     eval_interval = 1000
     max_lr = 6e-4
@@ -15,11 +33,12 @@ class Config:
     eval_iters = 100
     n_embd = 512
     n_head = 8
-    n_layer = 10
+    n_layer = 3
     dropout = 0.2   
-    PAD_TOKEN = 200019
-    END_TOK = 200021
-    CURRENT_ITER = 14171
+    PAD_TOKEN = 0
+    START_TOKEN = 1
+    END_TOK = 2
+    CURRENT_ITER = 1
 # ------------
 
 

@@ -7,36 +7,14 @@ from collections import namedtuple
 import torch
 import math
 
-from utils import Config, generate_masks
+from utils import Config, generate_masks, encode, decode, vocab
 
 torch.manual_seed(1337)
 torch.cuda.manual_seed(1337)
 
-
-
-gpt_4o_enc = tiktoken.encoding_for_model("gpt-4o")
-# In production, load the arguments directly instead of accessing private attributes
-# See openai_public.py for examples of arguments for specific encodings
-enc = tiktoken.Encoding(
-    # If you're changing the set of special tokens, make sure to use a different name
-    # It should be clear from the name what behaviour to expect.
-    name="cl100k_im",
-    pat_str=gpt_4o_enc._pat_str,
-    mergeable_ranks=gpt_4o_enc._mergeable_ranks,
-    special_tokens={
-        **gpt_4o_enc._special_tokens,
-        "<|PAD|>": gpt_4o_enc.n_vocab,
-        "<|START|>": gpt_4o_enc.n_vocab+1,
-        "<|END|>": gpt_4o_enc.n_vocab+2,
-    }
-)
-
-
-encode = lambda x: enc.encode(x, allowed_special='all')
-decode = lambda x: enc.decode(x)
-
 def pad(x):
   '''Pad a sequence to the desired block size'''
+
   if len(x) < Config.block_size:
         x = x + [Config.PAD_TOKEN for _ in range(Config.block_size - len(x))]
   return x
@@ -45,8 +23,9 @@ def pad(x):
 def prepare_dataset(x):
   '''Encode and pad each sentence in the dataset'''
   del x['Unnamed: 0']
-  en = encode(x['en'].strip())
-  ta = encode('<|START|>' + x['ta'].strip() + '<|END|>')
+
+  en = encode(x['en'].strip().lower())
+  ta = [Config.START_TOKEN, *encode(x['ta'].strip().lower()), Config.END_TOK]
 
   x['en'] = pad(en)
   x['ta'] = pad(ta)
@@ -60,8 +39,11 @@ if __name__=='__main__':
     # Load dataset from Huggingface
     ds = load_dataset("Hemanth-thunder/en_ta")
 
-    encoded_ds = ds.map(prepare_dataset)
-    encoded_ds = encoded_ds.filter(lambda x: len(x['en']) == 256 and len(x['ta']) == 256)
+    encoded_ds = ds.filter(lambda x: sum([1 if i not in vocab else 0 for i in x['en'].strip()]) == 0 and sum([1 if i not in vocab else 0 for i in x['ta'].strip()]) == 0)
+    print("Filtered for valid characters: ", encoded_ds['train'].num_rows)
+    encoded_ds = encoded_ds.map(prepare_dataset)
+    encoded_ds = encoded_ds.filter(lambda x: len(x['en']) == Config.block_size and len(x['ta']) == Config.block_size)
+    print("Filtered for block size: ", encoded_ds['train'].num_rows)
     encoded_ds = encoded_ds.with_format('torch')
 
     class DataLoader():
@@ -83,12 +65,11 @@ if __name__=='__main__':
             y = torch.cat((xo[:, 1:], ta_padding), dim=1)
 
             xi, xo, y = xi.to(Config.device), xo.to(Config.device), y.to(Config.device)
-
             self.current_batch = (self.current_batch + 1) % (self.dataset.num_rows//Config.batch_size)
 
             if self.current_batch == 0:
-                encoded_ds = encoded_ds.shuffle()
-            self.dataset = encoded_ds[self.split]
+                shuffled_ds = encoded_ds.shuffle()
+                self.dataset = shuffled_ds[self.split]
 
             return DataLoader.DataBatch(xo, t_m, xi, e_m, ca_m, y)
   
@@ -96,7 +77,7 @@ if __name__=='__main__':
 
     model = BigramLanguageModel()
     model = model.to(Config.device)
-    model = torch.compile(model)
+    # model = torch.compile(model)
 
     # Print the model size and parameter size
     param_size = 0
@@ -141,8 +122,8 @@ if __name__=='__main__':
                 else:
                     batch = val_dl.get_next_batch()
                 
-                with torch.autocast(device_type=Config.device, dtype=torch.bfloat16):
-                    logits, loss = model(batch.output, batch.out_mask, batch.input, batch.in_mask, batch.ca_mask, batch.targets)
+                # with torch.autocast(device_type=Config.device, dtype=torch.float16):
+                logits, loss = model(batch.output, batch.out_mask, batch.input, batch.in_mask, None, batch.targets)
                 losses[k] = loss.item()
             out[split] = losses.mean()
         model.train()
@@ -153,7 +134,7 @@ if __name__=='__main__':
     model_save_path = "./checkpoint/model.pt"
     checkpoint_file = Path(model_save_path)
     if checkpoint_file.is_file():
-        model.load_state_dict(torch.load(model_save_path))
+        print(model.load_state_dict(torch.load(model_save_path)))
 
     # create a PyTorch optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=Config.min_lr)
@@ -176,7 +157,7 @@ if __name__=='__main__':
                     torch.save(deepcopy(model.state_dict()), model_save_path)
 
                 min_loss = losses['validation']
-                eng_ctx = encode("The weather is nice today")
+                eng_ctx = encode("The weather is nice today".lower())
                 eng_l = torch.tensor([min(len(eng_ctx), Config.block_size)], dtype=torch.long, device=Config.device)
                 eng_ctx =  [*eng_ctx, *[Config.PAD_TOKEN for _ in range(Config.block_size-len(eng_ctx))]]
 
@@ -191,9 +172,9 @@ if __name__=='__main__':
         # sample a batch of data
         batch = train_dl.get_next_batch()
 
-        with torch.autocast(device_type=Config.device, dtype=torch.bfloat16):
+        # with torch.autocast(device_type=Config.device, dtype=torch.float16):
             # evaluate the loss
-            logits, loss = model(batch.output, batch.out_mask, batch.input, batch.in_mask, batch.ca_mask, batch.targets)
+        logits, loss = model(batch.output, batch.out_mask, batch.input, batch.in_mask, None, batch.targets)
 
         loss.backward()
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)

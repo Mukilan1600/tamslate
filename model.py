@@ -3,7 +3,6 @@ import torch.nn as nn
 from torch.nn import functional as F
 from utils import Config, generate_masks
 
-
 class SelfAttentionHead(nn.Module):
     """ one head of self-attention """
 
@@ -62,8 +61,8 @@ class CrossAttentionHead(nn.Module):
         # compute attention scores ("affinities")
         wei = q @ k.transpose(-2,-1) * C**-0.5 # (B, T, C) @ (B, C, T) -> (B, T, T)
 
-
-        wei = wei.masked_fill(mask == 0, float(-1e9)) # (B, T, T)
+        if not mask is None:
+            wei = wei.masked_fill(mask == 0, float(-1e9)) # (B, T, T)
 
         wei = F.softmax(wei, dim=-1) # (B, T, T)
         wei = self.dropout(wei)
@@ -209,8 +208,8 @@ class BigramLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
         # each token directly reads off the logits for the next token from a lookup table
-        self.encoder = Encoder(Config.vocab_Size)
-        self.decoder = Decoder(Config.vocab_Size)
+        self.encoder = Encoder(Config.vocab_size)
+        self.decoder = Decoder(Config.vocab_size)
 
     def forward(self, x, x_mask, y, y_mask, ca_mask, targets=None):
         
