@@ -236,8 +236,7 @@ class BigramLanguageModel(nn.Module):
             idx_cond = idx[:, -Config.block_size:]
             idx_pad = torch.tensor([[*x, *[Config.PAD_TOKEN for _ in range(Config.block_size-len(x))]] for x in idx_cond], dtype=torch.long, device=Config.device)
 
-            out_m, eng_m, ca_m = generate_masks(eng, idx_cond)
-
+            eng_m, out_m, ca_m = generate_masks(eng, idx_pad)
 
 
 

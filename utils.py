@@ -16,29 +16,29 @@ kv = {v:k for k,v in enumerate(vocab)}
 vk = {k:v for k,v in enumerate(vocab)}
 
 encode = lambda s: [kv[c] for c in s] # encoder: take a string, output a list of integers
-decode = lambda s: [vk[c] for c in s] # encoder: take a string, output a list of integers
+decode = lambda s: "".join([vk[c] for c in s]) # decoder: takes a list of encodings, output a string
 
 # hyperparameters
 class Config:
-    batch_size = 64 # how many independent sequences will we process in parallel?
+    batch_size = 196 # how many independent sequences will we process in parallel?
     block_size = 256
     vocab_size = len(vocab)
     max_steps = 20000
-    eval_interval = 1000
+    eval_interval = 500
     max_lr = 6e-4
     min_lr = max_lr * 0.1
     warmup_steps = max_steps * 0.05
     decay_steps = max_steps * 0.5
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    eval_iters = 100
+    eval_iters = 50
     n_embd = 512
     n_head = 8
-    n_layer = 3
-    dropout = 0.2   
+    n_layer = 4
+    dropout = 0.1
     PAD_TOKEN = 0
     START_TOKEN = 1
     END_TOK = 2
-    CURRENT_ITER = 1
+    CURRENT_ITER = 0
 # ------------
 
 
@@ -49,6 +49,7 @@ def generate_masks(en, ta):
   ta_m = torch.zeros(size, Config.block_size, Config.block_size, dtype=torch.int, device=Config.device)
   ca_m = torch.zeros(size, Config.block_size, Config.block_size, dtype=torch.int, device=Config.device)
 
+  t = sum([0 if x == Config.PAD_TOKEN else 1 for x in ta[0]])
   en = (en != Config.PAD_TOKEN).sum(1)
   ta = (ta != Config.PAD_TOKEN).sum(1)
 

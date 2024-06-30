@@ -1,0 +1,6 @@
+Val step    0 | <|START|>௴௟|3௭[஼வsூந஄fx^சtழ஁Qஅ஋றஹ&?L௓9஧஝_௓T9மஎE _டள1mஔ2s௵஫15r&஑௉ி௅௬௛௄&஝U஧௎௅O஭்஍௝H஻௲ோ௛ஷiுPg஼஋Uஷ௨ஒ$வKஈந'௹௯mK௸*௰ஃய$ ௭வJK஗+k௉;ூq?஛ஸ7௨S௅>z௭A&ஶ௪஥௞௄௑*௘H௮஬Oஉ௲3ஹ_\ஈB஘*ௐ௲<யF஺ர௖஖௴௙தஜௐW௓௃௧{2஌௿w஠௺஥஖@௿Zy\௙னஇ௵௛S~Vௌ<|PAD|>9-P௜ஃ௸஄௷}௄Nள/v௒H஀஄V*yoY)஺஁rH1஻௬M௎qவ<o௨u6 ஺஥௶i஘௻5௪மௌc௷a R௼ள-?ண௲ஃந஡<|end_sample|>
+Val step  500 | <|START|>அதன் ரபத்தால் நாற்வினென்றதே<|END|><|end_sample|>
+Val step 1000 | <|START|>அதனை நினைவுக்கா?<|END|><|end_sample|>
+Val step 1500 | <|START|>அதன் இசையமையில் பயணம்?<|END|><|end_sample|>
+Val step 2000 | <|START|>அவை அந்த நாற்று dcp இருக்கினார்கள்.<|END|><|end_sample|>
+Val step 2500 | <|START|>தொடர்ந்துள்ளது.<|END|><|end_sample|>

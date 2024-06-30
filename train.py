@@ -93,7 +93,7 @@ if __name__=='__main__':
 
     print(f'Model size: {size_all_mb:.3f}MB, Params: {sum(p.numel() for p in model.parameters())/1e6}M ')
     print("---------------------------")
-    print(Config)
+    print("".join([f"{v:18s}: {m}\n" for v, m in vars(Config).items() if not (v.startswith('_')  or callable(m))]))
     print("---------------------------")
 
 
@@ -128,7 +128,7 @@ if __name__=='__main__':
                     batch = val_dl.get_next_batch()
                 
                 with torch.autocast(device_type=Config.device, dtype=torch.bfloat16):
-                    logits, loss = model(batch.output, batch.out_mask, batch.input, batch.in_mask, None, batch.targets)
+                    logits, loss = model(batch.output, batch.out_mask, batch.input, batch.in_mask, batch.ca_mask, batch.targets)
                 losses[k] = loss.item()
             out[split] = losses.mean()
         model.train()
@@ -166,7 +166,7 @@ if __name__=='__main__':
                 eng_l = torch.tensor([min(len(eng_ctx), Config.block_size)], dtype=torch.long, device=Config.device)
                 eng_ctx =  [*eng_ctx, *[Config.PAD_TOKEN for _ in range(Config.block_size-len(eng_ctx))]]
 
-                out = [[encode('<|START|>')[0]]]
+                out = [[Config.START_TOKEN]]
                 gen_out = decode(model.generate(eng = torch.tensor([eng_ctx], dtype=torch.long, device=Config.device), eng_l = eng_l, idx = torch.tensor(out, dtype=torch.long, device=Config.device), max_new_tokens=256)[0].tolist())
                 with open("gen_log.txt", 'a') as f:
                     f.write(f"Val step {iter:4d} | {gen_out}<|end_sample|>\n")
@@ -179,7 +179,7 @@ if __name__=='__main__':
 
         with torch.autocast(device_type=Config.device, dtype=torch.bfloat16):
             # evaluate the loss
-            logits, loss = model(batch.output, batch.out_mask, batch.input, batch.in_mask, None, batch.targets)
+            logits, loss = model(batch.output, batch.out_mask, batch.input, batch.in_mask, batch.ca_mask, batch.targets)
 
         loss.backward()
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
