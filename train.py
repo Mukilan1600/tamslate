@@ -38,7 +38,8 @@ if __name__=='__main__':
    
     # Load dataset from Huggingface
     ds = load_dataset("Hemanth-thunder/en_ta")
-
+    
+    print("Original size: ", ds['train'].num_rows)
     encoded_ds = ds.filter(lambda x: sum([1 if i not in vocab else 0 for i in x['en'].strip()]) == 0 and sum([1 if i not in vocab else 0 for i in x['ta'].strip()]) == 0)
     print("Filtered for valid characters: ", encoded_ds['train'].num_rows)
     encoded_ds = encoded_ds.map(prepare_dataset)
@@ -77,8 +78,9 @@ if __name__=='__main__':
 
     model = BigramLanguageModel()
     model = model.to(Config.device)
-    # model = torch.compile(model)
+    model = torch.compile(model)
 
+    print("---------------------------")
     # Print the model size and parameter size
     param_size = 0
     for param in model.parameters():
@@ -90,6 +92,9 @@ if __name__=='__main__':
     size_all_mb = (param_size + buffer_size) / 1024**2
 
     print(f'Model size: {size_all_mb:.3f}MB, Params: {sum(p.numel() for p in model.parameters())/1e6}M ')
+    print("---------------------------")
+    print(Config)
+    print("---------------------------")
 
 
     train_dl = DataLoader('train', Config.CURRENT_ITER)
@@ -122,8 +127,8 @@ if __name__=='__main__':
                 else:
                     batch = val_dl.get_next_batch()
                 
-                # with torch.autocast(device_type=Config.device, dtype=torch.float16):
-                logits, loss = model(batch.output, batch.out_mask, batch.input, batch.in_mask, None, batch.targets)
+                with torch.autocast(device_type=Config.device, dtype=torch.bfloat16):
+                    logits, loss = model(batch.output, batch.out_mask, batch.input, batch.in_mask, None, batch.targets)
                 losses[k] = loss.item()
             out[split] = losses.mean()
         model.train()
@@ -172,9 +177,9 @@ if __name__=='__main__':
         # sample a batch of data
         batch = train_dl.get_next_batch()
 
-        # with torch.autocast(device_type=Config.device, dtype=torch.float16):
+        with torch.autocast(device_type=Config.device, dtype=torch.bfloat16):
             # evaluate the loss
-        logits, loss = model(batch.output, batch.out_mask, batch.input, batch.in_mask, None, batch.targets)
+            logits, loss = model(batch.output, batch.out_mask, batch.input, batch.in_mask, None, batch.targets)
 
         loss.backward()
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
