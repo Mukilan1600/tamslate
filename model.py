@@ -241,7 +241,7 @@ class BigramLanguageModel(nn.Module):
 
 
             # get the predictions
-            logits, loss = self(idx_pad, out_m, eng, eng_m, ca_m)
+            logits, loss = self(idx_pad, out_m, eng, eng_m, None)
             # focus only on the last time step
             logits = logits[:, len(idx_cond[0])-1, :] # becomes (B, C)
             # apply softmax to get probabilities
