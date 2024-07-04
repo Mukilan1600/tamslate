@@ -122,7 +122,7 @@ class DecoderBlock(nn.Module):
         self.register_buffer("tril", torch.tril(torch.ones(Config.block_size, Config.block_size, dtype=torch.bool, device=Config.device)))
 
     def forward(self, x, x_mask, ca, ca_mask):
-        x = x + self.self_att(self.ln1(x), x_mask & self.tril)
+        x = x + self.self_att(self.ln1(x), torch.logical_and(x_mask, self.tril))
         x = x + self.cross_att(self.ln2(x), ca, ca_mask)
         x = x + self.ffwd(self.ln3(x))
         return x

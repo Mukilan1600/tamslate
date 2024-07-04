@@ -1,7 +1,6 @@
 from pathlib import Path
 import time
 from model import BigramLanguageModel
-from torchtext.data.metrics import bleu_score
 from datasets import load_dataset
 from collections import namedtuple
 import torch
@@ -64,12 +63,13 @@ if __name__=='__main__':
             xi = self.dataset[idx : idx + Config.batch_size]['en']
             xo = self.dataset[idx : idx + Config.batch_size]['ta']
 
+            xi, xo = xi.to(Config.device), xo.to(Config.device)
+
             e_m, t_m, ca_m = generate_masks(xi, xo)
 
-            ta_padding = torch.full((Config.batch_size, 1), Config.PAD_TOKEN)
+            ta_padding = torch.full((Config.batch_size, 1), Config.PAD_TOKEN, device=Config.device)
             y = torch.cat((xo[:, 1:], ta_padding), dim=1)
 
-            xi, xo, y = xi.to(Config.device), xo.to(Config.device), y.to(Config.device)
             self.current_batch = (self.current_batch + 1) % (self.dataset.num_rows//Config.batch_size)
 
             if self.current_batch == 0:
@@ -95,7 +95,7 @@ if __name__=='__main__':
 
     model = BigramLanguageModel()
     model = model.to(Config.device)
-    model = torch.compile(model)
+    # model = torch.compile(model)
 
     print("---------------------------")
     # Print the model size and parameter size
@@ -172,28 +172,6 @@ if __name__=='__main__':
         out_txt = model.generate(eng = torch.tensor([eng_ctx], dtype=torch.long, device=Config.device), eng_l = eng_l, idx = torch.tensor(out, dtype=torch.long, device=Config.device), max_new_tokens=256)[0].tolist()
         return out_txt
 
-    @torch.no_grad()
-    def evaluate_bleu():
-        model.eval()
-        original = []
-        predictions = []
-
-        with torch.no_grad():
-            for i in range(Config.test_iters):
-                # Extract inputs from batch
-                input, out = test_dl.get_test_batch()
-                en = decode([x for x in input if x != Config.PAD_TOKEN])
-                ta = decode([x for x in out[1:-2] if x != Config.PAD_TOKEN])
-                original.append(ta.split())
-                # Generate predictions
-                preds = generate(en)
-
-                predictions.append(decode(preds[1:-2]).split())
-        # Calculate BLEU score
-        bleu_score_val = bleu_score(predictions, original, max_n=4, weights=[0.25, 0.25, 0.25, 0.25])
-
-        return bleu_score_val
-
     min_loss = 12
     for iter in range(start_epoch, Config.max_steps):
 
@@ -233,9 +211,15 @@ if __name__=='__main__':
         # sample a batch of data
         batch = train_dl.get_next_batch()
 
+        dl_dt = (time.time() - t0) * 1000
+        t0 = time.time()
+
         with torch.autocast(device_type=Config.device, dtype=torch.bfloat16):
             # evaluate the loss
             logits, loss = model(batch.output, batch.out_mask, batch.input, batch.in_mask, batch.ca_mask, batch.targets)
+
+        fw_dt = (time.time() - t0) * 1000
+        t0 = time.time()
 
         loss.backward()
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -246,7 +230,7 @@ if __name__=='__main__':
         optimizer.step()
 
         t1 = time.time()
-        dt = (t1 - t0) * 1000
-        print(f"Step {iter:4d} | norm: {norm:.4f} | lr: {lr:.6f} | loss: {loss.item():.4f} | dt: {dt:.2f}")
+        bck_dt = (t1 - t0) * 1000
+        print(f"Step {iter:4d} | norm: {norm:.4f} | lr: {lr:.6f} | loss: {loss.item():.4f} | Data dt: {dl_dt:5.2f} | Forward dt: {fw_dt:5.2f} | Backward dt: {bck_dt:5.2f}")
         with open("step_log.txt", 'a') as f:
-            f.write(f"Step {iter:4d} | norm: {norm:.4f} | lr: {lr:.6f} | loss: {loss.item():.4f} | dt: {dt:.2f}\n")
+            f.write(f"Step {iter:4d} | norm: {norm:.4f} | lr: {lr:.6f} | loss: {loss.item():.4f} | Data dt: {dl_dt:5.2f} | Forward dt: {fw_dt:5.2f} | Backward dt: {bck_dt:5.2f}\n")

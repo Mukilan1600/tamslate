@@ -24,7 +24,7 @@ class Config:
     batch_size = 128 # how many independent sequences will we process in parallel?
     block_size = 256
     vocab_size = len(vocab)
-    data_rows = 50000
+    data_rows = 200000
     epochs = 15
     max_steps = (data_rows//batch_size) * epochs
     eval_interval = 500
@@ -37,7 +37,7 @@ class Config:
     test_iters = 10
     n_embd = 512
     n_head = 8
-    n_layer = 6
+    n_layer = 2
     dropout = 0.1
     PAD_TOKEN = 0
     START_TOKEN = 1
@@ -47,21 +47,39 @@ class Config:
 
 
 def generate_masks(en, ta):
-  '''Generate look ahead and cross-attention masks'''
-  size = len(en)
-  en_m = torch.zeros(size, Config.block_size, Config.block_size, dtype=torch.int, device=Config.device)
-  ta_m = torch.zeros(size, Config.block_size, Config.block_size, dtype=torch.int, device=Config.device)
-  ca_m = torch.zeros(size, Config.block_size, Config.block_size, dtype=torch.int, device=Config.device)
-  
-  en = (en != Config.PAD_TOKEN).sum(1)
-  ta = (ta != Config.PAD_TOKEN).sum(1)
+    '''Generate look ahead and cross-attention masks'''
+    size = len(en)
+    block_size = Config.block_size
+    device = Config.device
 
-  for i in range(size):
-    en_m[i, :en[i], :en[i]] = 1
-    ta_m[i, :ta[i], :ta[i]] = 1
-    ca_m[i, :ta[i], :en[i]] = 1
+    # Ensure input tensors are on the correct device
+    en = en.to(device)
+    ta = ta.to(device)
 
-  return en_m, ta_m, ca_m
+    # Calculate sequence lengths
+    en_lens = (en != Config.PAD_TOKEN).sum(1)
+    ta_lens = (ta != Config.PAD_TOKEN).sum(1)
+
+    # Create base masks
+    base_mask = torch.ones(block_size, block_size, dtype=torch.bool, device=device).unsqueeze(0).expand(size, -1, -1)
+    
+    # Generate masks
+    en_m = base_mask.clone()
+    ta_m = base_mask.clone()
+    ca_m = base_mask.clone()
+
+    # Create indices for masking
+    seq_indices = torch.arange(block_size, device=device)
+
+    # Apply sequence length masks
+    en_mask = seq_indices[None, :] >= en_lens[:, None, None]
+    ta_mask = seq_indices[None, :] >= ta_lens[:, None, None]
+
+    en_m = en_m & ~en_mask & ~en_mask.transpose(-1, -2)
+    ta_m = ta_m & ~ta_mask & ~ta_mask.transpose(-1, -2)
+    ca_m = ca_m & ~en_mask & ~ta_mask.transpose(-1, -2)
+
+    return en_m.int(), ta_m.int(), ca_m.int()
 
 
 def save_ckp(state, is_best, checkpoint_dir, best_model_dir):
