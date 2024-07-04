@@ -1,6 +1,13 @@
-Val step    0 | train loss 5.6427 | val loss 5.6420
-Val step  500 | train loss 1.9285 | val loss 1.9341
-Val step 1000 | train loss 1.4325 | val loss 1.8666
-Val step 1500 | train loss 1.3452 | val loss 1.3936
-Val step 2000 | train loss 1.2649 | val loss 1.3098
-Val step 2500 | train loss 1.2001 | val loss 1.2435
+Eval step    0 | train loss 5.5795 | val loss 5.5824 | BLUE: 0.0000
+Eval step  500 | train loss 1.7772 | val loss 1.7861 | BLUE: 0.0000
+Eval step 1000 | train loss 1.4466 | val loss 1.4530 | BLUE: 0.0000
+Eval step 1500 | train loss 1.3084 | val loss 1.3202 | BLUE: 0.0000
+Eval step 2000 | train loss 1.2331 | val loss 1.2460 | BLUE: 0.0000
+Eval step 2500 | train loss 1.1754 | val loss 1.2000 | BLUE: 0.0000
+Eval step 3000 | train loss 1.1468 | val loss 1.1672 | BLUE: 0.0000
+Eval step 3500 | train loss 1.1148 | val loss 1.1489 | BLUE: 0.0000
+Eval step 4000 | train loss 1.1020 | val loss 1.1392 | BLUE: 0.0000
+Eval step 4500 | train loss 1.0994 | val loss 1.1347 | BLUE: 0.0000
+Eval step 5000 | train loss 1.0789 | val loss 1.1279 | BLUE: 0.0000
+Eval step 5500 | train loss 1.0822 | val loss 1.1223 | BLUE: 0.0000
+Eval step 5849 | train loss 1.0736 | val loss 1.1191 | BLUE: 0.0000

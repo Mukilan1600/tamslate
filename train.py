@@ -1,13 +1,13 @@
 from pathlib import Path
 import time
 from model import BigramLanguageModel
-import tiktoken
+from torchtext.data.metrics import bleu_score
 from datasets import load_dataset
 from collections import namedtuple
 import torch
 import math
 
-from utils import Config, generate_masks, encode, decode, vocab
+from utils import Config, generate_masks, encode, decode, load_ckp, save_ckp, vocab
 
 torch.manual_seed(1337)
 torch.cuda.manual_seed(1337)
@@ -16,7 +16,7 @@ def pad(x):
   '''Pad a sequence to the desired block size'''
 
   if len(x) < Config.block_size:
-        x = x + [Config.PAD_TOKEN for _ in range(Config.block_size - len(x))]
+        x = x + [Config.PAD_TOKEN for _ in range(Config.block_size-len(x))]
   return x
 
 
@@ -40,12 +40,16 @@ if __name__=='__main__':
     ds = load_dataset("Hemanth-thunder/en_ta")
     
     print("Original size: ", ds['train'].num_rows)
-    encoded_ds = ds.filter(lambda x: sum([1 if i not in vocab else 0 for i in x['en'].strip()]) == 0 and sum([1 if i not in vocab else 0 for i in x['ta'].strip()]) == 0)
+    encoded_ds = ds.filter(lambda x: sum([0 if i in vocab else 1 for i in x['en'].strip()])==0 and sum([0 if i in vocab else 1 for i in x['ta'].strip()]) == 0)
     print("Filtered for valid characters: ", encoded_ds['train'].num_rows)
     encoded_ds = encoded_ds.map(prepare_dataset)
-    encoded_ds = encoded_ds.filter(lambda x: len(x['en']) == Config.block_size and len(x['ta']) == Config.block_size)
+    encoded_ds = encoded_ds.filter(lambda x: len(x['en'])==Config.block_size and len(x['ta']) == Config.block_size)
     print("Filtered for block size: ", encoded_ds['train'].num_rows)
+    encoded_ds = encoded_ds.filter(lambda x,t: t <= Config.data_rows, with_indices=True)
+    print("Filtered for total size: ", encoded_ds['train'].num_rows)
+    
     encoded_ds = encoded_ds.with_format('torch')
+
 
     class DataLoader():
         '''Lite dataloader class to load batch of sentences'''
@@ -60,7 +64,7 @@ if __name__=='__main__':
             xi = self.dataset[idx : idx + Config.batch_size]['en']
             xo = self.dataset[idx : idx + Config.batch_size]['ta']
 
-            t_m, e_m, ca_m = generate_masks(xi, xo)
+            e_m, t_m, ca_m = generate_masks(xi, xo)
 
             ta_padding = torch.full((Config.batch_size, 1), Config.PAD_TOKEN)
             y = torch.cat((xo[:, 1:], ta_padding), dim=1)
@@ -73,7 +77,20 @@ if __name__=='__main__':
                 self.dataset = shuffled_ds[self.split]
 
             return DataLoader.DataBatch(xo, t_m, xi, e_m, ca_m, y)
-  
+        
+        def get_test_batch(self):
+            idx = self.current_batch
+            xi = self.dataset[idx]['en'].tolist()
+            xo = self.dataset[idx]['ta'].tolist()
+            
+            self.current_batch = (self.current_batch + 1) % (self.dataset.num_rows)
+            
+            if self.current_batch == 0:
+                shuffled_ds = encoded_ds.shuffle()
+                self.dataset = shuffled_ds[self.split]
+
+            return (xi, xo)
+
     torch.set_float32_matmul_precision("high")
 
     model = BigramLanguageModel()
@@ -97,8 +114,19 @@ if __name__=='__main__':
     print("---------------------------")
 
 
-    train_dl = DataLoader('train', Config.CURRENT_ITER)
-    val_dl = DataLoader('validation', Config.CURRENT_ITER)
+        # create a PyTorch optimizer
+    optimizer = torch.optim.AdamW(model.parameters(), lr=Config.min_lr)
+    start_epoch = 0
+
+    best_model_path = "./checkpoint/best_model.pt"
+    checkpoint_file = Path(best_model_path)
+    if checkpoint_file.is_file():
+        model, optimizer, start_epoch = load_ckp(best_model_path, model, optimizer)
+        print(f"Resuming training from iteration: {start_epoch}...")
+
+    train_dl = DataLoader('train', start_epoch)
+    val_dl = DataLoader('validation', start_epoch)
+    test_dl = DataLoader('test', start_epoch)
 
     def get_lr(step):
         if step < Config.warmup_steps:
@@ -118,7 +146,6 @@ if __name__=='__main__':
     def estimate_loss():
         '''Estimate average loss over eval_iters steps'''
         out = {}
-        model.eval()
         for split in ['train', 'validation']:
             losses = torch.zeros(Config.eval_iters)
             for k in range(Config.eval_iters):
@@ -127,25 +154,48 @@ if __name__=='__main__':
                 else:
                     batch = val_dl.get_next_batch()
                 
-                with torch.autocast(device_type=Config.device, dtype=torch.bfloat16):
-                    logits, loss = model(batch.output, batch.out_mask, batch.input, batch.in_mask, batch.ca_mask, batch.targets)
+                logits, loss = model(batch.output, batch.out_mask, batch.input, batch.in_mask, batch.ca_mask, batch.targets)
                 losses[k] = loss.item()
             out[split] = losses.mean()
-        model.train()
         return out
 
     from copy import deepcopy
 
-    model_save_path = "./checkpoint/model.pt"
-    checkpoint_file = Path(model_save_path)
-    if checkpoint_file.is_file():
-        print(model.load_state_dict(torch.load(model_save_path)))
+    @torch.no_grad()
+    def generate(str):
+        eng_ctx = encode(str.lower())
+        eng_l = torch.tensor([min(len(eng_ctx), Config.block_size)], dtype=torch.long, device=Config.device)
+        eng_ctx =  [*eng_ctx, *[Config.PAD_TOKEN for _ in range(Config.block_size-len(eng_ctx))]]
 
-    # create a PyTorch optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=Config.min_lr)
+        out = [[Config.START_TOKEN]]
+
+        out_txt = model.generate(eng = torch.tensor([eng_ctx], dtype=torch.long, device=Config.device), eng_l = eng_l, idx = torch.tensor(out, dtype=torch.long, device=Config.device), max_new_tokens=256)[0].tolist()
+        return out_txt
+
+    @torch.no_grad()
+    def evaluate_bleu():
+        model.eval()
+        original = []
+        predictions = []
+
+        with torch.no_grad():
+            for i in range(Config.test_iters):
+                # Extract inputs from batch
+                input, out = test_dl.get_test_batch()
+                en = decode([x for x in input if x != Config.PAD_TOKEN])
+                ta = decode([x for x in out[1:-2] if x != Config.PAD_TOKEN])
+                original.append(ta.split())
+                # Generate predictions
+                preds = generate(en)
+
+                predictions.append(decode(preds[1:-2]).split())
+        # Calculate BLEU score
+        bleu_score_val = bleu_score(predictions, original, max_n=4, weights=[0.25, 0.25, 0.25, 0.25])
+
+        return bleu_score_val
 
     min_loss = 12
-    for iter in range(Config.CURRENT_ITER, Config.max_steps):
+    for iter in range(start_epoch, Config.max_steps):
 
         t0 = time.time()
 
@@ -154,22 +204,28 @@ if __name__=='__main__':
             model.eval()
             with torch.no_grad():
                 losses = estimate_loss()
-                print(f"Val step {iter:4d} | train loss {losses['train']:.4f} | val loss {losses['validation']:.4f}")
+                bleu = 0
+                print(f"Eval step {iter:4d} | train loss {losses['train']:.4f} | val loss {losses['validation']:.4f} | BLUE: {bleu:.4f}")
                 with open("loss_log.txt", 'a') as f:
-                    f.write(f"Val step {iter:4d} | train loss {losses['train']:.4f} | val loss {losses['validation']:.4f}\n")
+                    f.write(f"Eval step {iter:4d} | train loss {losses['train']:.4f} | val loss {losses['validation']:.4f} | BLUE: {bleu:.4f}\n")
 
+                checkpoint = {
+                    'epoch': iter + 1,
+                    'state_dict': deepcopy(model.state_dict()),
+                    'optimizer': optimizer.state_dict()
+                }
                 if losses['validation'] <= min_loss:
-                    torch.save(deepcopy(model.state_dict()), model_save_path)
+                    save_ckp(checkpoint, True, f'./checkpoint/iter_{iter}_model.pt', best_model_path)
+                else:
+                    save_ckp(checkpoint, False, f'./checkpoint/iter_{iter}_model.pt', best_model_path)
 
                 min_loss = losses['validation']
-                eng_ctx = encode("The weather is nice today".lower())
-                eng_l = torch.tensor([min(len(eng_ctx), Config.block_size)], dtype=torch.long, device=Config.device)
-                eng_ctx =  [*eng_ctx, *[Config.PAD_TOKEN for _ in range(Config.block_size-len(eng_ctx))]]
+                out_1 = decode(generate("mma vice president qazi hussain ahmad declared last month: 'we are not extremists."))
+                out_2 = decode(generate("Hello, how are you?"))
 
-                out = [[Config.START_TOKEN]]
-                gen_out = decode(model.generate(eng = torch.tensor([eng_ctx], dtype=torch.long, device=Config.device), eng_l = eng_l, idx = torch.tensor(out, dtype=torch.long, device=Config.device), max_new_tokens=256)[0].tolist())
                 with open("gen_log.txt", 'a') as f:
-                    f.write(f"Val step {iter:4d} | {gen_out}<|end_sample|>\n")
+                    f.write(f"Eval step {iter:4d} | Sample 1: {out_1}<|eos|>\n")
+                    f.write(f"Eval step {iter:4d} | Sample 2: {out_2}<|eos|>\n")
             model.train()
 
         optimizer.zero_grad(set_to_none=True)

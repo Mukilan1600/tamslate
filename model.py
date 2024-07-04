@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -8,67 +9,44 @@ class SelfAttentionHead(nn.Module):
 
     def __init__(self, head_size):
         super().__init__()
-
         self.key = nn.Linear(Config.n_embd, head_size, bias=False)
         self.query = nn.Linear(Config.n_embd, head_size, bias=False)
         self.value = nn.Linear(Config.n_embd, head_size, bias=False)
-
         self.dropout = nn.Dropout(Config.dropout)
 
     def forward(self, x, mask):
-
-        B,T,C = x.shape
-
-        k = self.key(x)   # (B,T,C)
-        q = self.query(x) # (B,T,C)
-        v = self.value(x) # (B,T,C)
-
-        # compute attention scores ("affinities")
-        wei = q @ k.transpose(-2,-1) * C**-0.5 # (B, T, C) @ (B, C, T) -> (B, T, T)
-
-        wei = wei.masked_fill(mask == 0, float(-1e9)) # (B, T, T)
-
-        wei = F.softmax(wei, dim=-1) # (B, T, T)
+        B, T, C = x.shape
+        k = self.key(x)
+        q = self.query(x)
+        v = self.value(x)
+        wei = (q @ k.transpose(-2, -1)) * (C ** -0.5)
+        wei = wei.masked_fill(mask == 0, float(-1e9))
+        wei = F.softmax(wei, dim=-1)
         wei = self.dropout(wei)
-
-        # perform the weighted aggregation of the values
-        out = wei @ v # (B, T, T) @ (B, T, C) -> (B, T, C)
-
+        out = wei @ v
         return out
 
-
-
 class CrossAttentionHead(nn.Module):
-    """ one head of self-attention """
+    """ one head of cross-attention """
 
     def __init__(self, head_size):
         super().__init__()
-
         self.key = nn.Linear(Config.n_embd, head_size, bias=False)
         self.query = nn.Linear(Config.n_embd, head_size, bias=False)
         self.value = nn.Linear(Config.n_embd, head_size, bias=False)
-
         self.dropout = nn.Dropout(Config.dropout)
 
     def forward(self, x, y, mask):
-        B,T,C = x.shape
-
-        k = self.key(y)   # (B,T,C)
-        q = self.query(x) # (B,T,C)
-        v = self.value(y) # (B,T,C)
-
-
-        # compute attention scores ("affinities")
-        wei = q @ k.transpose(-2,-1) * C**-0.5 # (B, T, C) @ (B, C, T) -> (B, T, T)
-
-        if not mask is None:
-            wei = wei.masked_fill(mask == 0, float(-1e9)) # (B, T, T)
-
-        wei = F.softmax(wei, dim=-1) # (B, T, T)
+        B, T, C = x.shape
+        k = self.key(y)
+        q = self.query(x)
+        v = self.value(y)
+        wei = (q @ k.transpose(-2, -1)) * (C ** -0.5)
+        if mask is not None:
+            wei = wei.masked_fill(mask == 0, float(-1e9))
+        wei = F.softmax(wei, dim=-1)
         wei = self.dropout(wei)
-
-        # perform the weighted aggregation of the values
-        out = wei @ v # (B, T, T) @ (B, T, C) -> (B, T, C)
+        out = wei @ v
         return out
 
 class MultiHeadSelfAttention(nn.Module):
@@ -82,11 +60,12 @@ class MultiHeadSelfAttention(nn.Module):
 
     def forward(self, x, mask):
         out = torch.cat([h(x, mask) for h in self.heads], dim=-1)
-        out = self.dropout(self.proj(out))
+        out = self.proj(out)
+        out = self.dropout(out)
         return out
 
 class MultiHeadCrossAttention(nn.Module):
-    """ multiple heads of self-attention in parallel """
+    """ multiple heads of cross-attention in parallel """
 
     def __init__(self, num_heads, head_size):
         super().__init__()
@@ -96,41 +75,38 @@ class MultiHeadCrossAttention(nn.Module):
 
     def forward(self, x, y, mask):
         out = torch.cat([h(x, y, mask) for h in self.heads], dim=-1)
-        out = self.dropout(self.proj(out))
+        out = self.proj(out)
+        out = self.dropout(out)
         return out
-    
-class FeedFoward(nn.Module):
+
+class FeedForward(nn.Module):
     """ a simple linear layer followed by a non-linearity """
 
     def __init__(self, n_embd):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(n_embd, 4 * n_embd),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(4 * n_embd, n_embd),
             nn.Dropout(Config.dropout),
         )
 
     def forward(self, x):
         return self.net(x)
-    
+
 class EncoderBlock(nn.Module):
     def __init__(self):
         super().__init__()
         head_size = Config.n_embd // Config.n_head
-        self.self_att= MultiHeadSelfAttention(Config.n_head, head_size)
+        self.self_att = MultiHeadSelfAttention(Config.n_head, head_size)
         self.ln1 = nn.LayerNorm(Config.n_embd)
         self.ln2 = nn.LayerNorm(Config.n_embd)
-        self.ffwd = FeedFoward(Config.n_embd)
+        self.ffwd = FeedForward(Config.n_embd)
 
-    def forward(self, o):
-        x, m = o["x"], o["m"]
-
-        x = x + self.self_att(self.ln1(x), m)
+    def forward(self, x, mask):
+        x = x + self.self_att(self.ln1(x), mask)
         x = x + self.ffwd(self.ln2(x))
-
-        return {"x":x, "m":m}
-
+        return x
 
 class DecoderBlock(nn.Module):
     def __init__(self):
@@ -141,119 +117,106 @@ class DecoderBlock(nn.Module):
         self.ln1 = nn.LayerNorm(Config.n_embd)
         self.ln2 = nn.LayerNorm(Config.n_embd)
         self.ln3 = nn.LayerNorm(Config.n_embd)
-        self.ffwd = FeedFoward(Config.n_embd)
+        self.ffwd = FeedForward(Config.n_embd)
 
-        self.register_buffer("tril", torch.tril(torch.ones(Config.block_size, Config.block_size, dtype=torch.int, device=Config.device)))
+        self.register_buffer("tril", torch.tril(torch.ones(Config.block_size, Config.block_size, dtype=torch.bool, device=Config.device)))
 
-
-    def forward(self, o):
-
-        x, x_m, ca, ca_m = o["x"], o["x_m"], o["ca"], o["ca_m"]
-
-        x = x + self.self_att(self.ln1(x), x_m & self.tril)
-        x = x + self.cross_att(self.ln2(x), ca, ca_m)
+    def forward(self, x, x_mask, ca, ca_mask):
+        x = x + self.self_att(self.ln1(x), x_mask & self.tril)
+        x = x + self.cross_att(self.ln2(x), ca, ca_mask)
         x = x + self.ffwd(self.ln3(x))
+        return x
 
-        return {"x":x, "x_m":x_m, "ca":ca, "ca_m":ca_m}
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        super().__init__()
+        self.pe = torch.zeros(max_len, d_model, device=Config.device)
+        position = torch.arange(0, max_len, dtype=torch.float, device=Config.device).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2, device=Config.device).float() * (-math.log(10000.0) / d_model))
+        self.pe[:, 0::2] = torch.sin(position * div_term)
+        self.pe[:, 1::2] = torch.cos(position * div_term)
+        self.pe = self.pe.unsqueeze(0).transpose(0, 1)
+
+    def forward(self, x):
+        return x + self.pe[:x.size(0), :]
 
 class Encoder(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
-
         self.input_emb = nn.Embedding(vocab_size, Config.n_embd)
-        self.position_emb = nn.Embedding(Config.block_size, Config.n_embd)
+        self.positional_encoding = PositionalEncoding(Config.n_embd)
         self.blocks = nn.Sequential(*[EncoderBlock() for _ in range(Config.n_layer)])
 
     def forward(self, x, mask):
         B, T = x.shape
-
-        tok_emb = self.input_emb(x) # B, T, C
-        pos_emb = self.position_emb(torch.arange(T, device=Config.device)) # T, C
-
-        x = tok_emb + pos_emb # B, T, C
-
-        o = {"x": x, "m": mask}
-        x = self.blocks(o)["x"]
-
+        x = self.input_emb(x) * math.sqrt(Config.n_embd)
+        x = self.positional_encoding(x.transpose(0, 1)).transpose(0, 1)
+        for block in self.blocks:
+            x = block(x, mask)
         return x
 
 class Decoder(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
-
-        self.input_embedding = nn.Embedding(vocab_size, Config.n_embd)
-        self.position_embedding = nn.Embedding(Config.block_size, Config.n_embd)
+        self.input_emb = nn.Embedding(vocab_size, Config.n_embd)
+        self.positional_encoding = PositionalEncoding(Config.n_embd)
         self.blocks = nn.Sequential(*[DecoderBlock() for _ in range(Config.n_layer)])
         self.ln_f = nn.LayerNorm(Config.n_embd)
         self.lm_head = nn.Linear(Config.n_embd, vocab_size)
 
     def forward(self, x, x_mask, ca, ca_mask):
         B, T = x.shape
-        
-        tok_emb = self.input_embedding(x)
-        pos_emb = self.position_embedding(torch.arange(T, device=Config.device))
-
-        x = tok_emb + pos_emb
-        o = {"x": x, "x_m": x_mask, "ca": ca, "ca_m": ca_mask}
-        x = self.blocks(o)["x"]
-
+        x = self.input_emb(x) * math.sqrt(Config.n_embd)
+        x = self.positional_encoding(x.transpose(0, 1)).transpose(0, 1)
+        for block in self.blocks:
+            x = block(x, x_mask, ca, ca_mask)
         x = self.ln_f(x)
         x = self.lm_head(x)
-
         return x
 
-# super simple bigram model
 class BigramLanguageModel(nn.Module):
-
     def __init__(self):
         super().__init__()
-        # each token directly reads off the logits for the next token from a lookup table
         self.encoder = Encoder(Config.vocab_size)
         self.decoder = Decoder(Config.vocab_size)
 
     def forward(self, x, x_mask, y, y_mask, ca_mask, targets=None):
-        
-        # Encoder
         ca_x = self.encoder(y, y_mask)
-
         logits = self.decoder(x, x_mask, ca_x, ca_mask)
-
         if targets is None:
             loss = None
         else:
             B, T, C = logits.shape
-            logits = logits.view(B*T, C)
-            targets = targets.view(B*T)
+            logits = logits.view(B * T, C)
+            targets = targets.view(B * T)
             loss = F.cross_entropy(logits, targets, ignore_index=Config.PAD_TOKEN)
-
         return logits, loss
-    
+
     def generate(self, eng, eng_l, idx, max_new_tokens):
-        # idx is (B, T) array of indices in the current context
+        # Move idx to the correct device
+        idx = idx.to(Config.device)
+        
         for _ in range(max_new_tokens):
-
-            # crop idx to the last block_size tokens
             idx_cond = idx[:, -Config.block_size:]
-            idx_pad = torch.tensor([[*x, *[Config.PAD_TOKEN for _ in range(Config.block_size-len(x))]] for x in idx_cond], dtype=torch.long, device=Config.device)
-
+            # Use torch.nn.functional.pad for padding
+            idx_pad = F.pad(idx_cond, (0, Config.block_size - idx_cond.size(1)), value=Config.PAD_TOKEN)
+            
+            # Ensure masks are generated correctly
             eng_m, out_m, ca_m = generate_masks(eng, idx_pad)
+            
+            # Get the predictions
+            logits, _ = self(idx_pad, out_m, eng, eng_m, ca_m)
+            logits = logits[:, idx_cond.size(1) - 1, :]  # Focus on the last time step
+            probs = F.softmax(logits, dim=-1)  # Apply softmax to get probabilities
+            
+            # Sample from the distribution
+            idx_next = torch.multinomial(probs, num_samples=1)
+            
+            # Append sampled index to the running sequence
+            idx = torch.cat((idx, idx_next), dim=1)
+            
+            # Check for end token
+            if (idx_next == Config.END_TOK).all():
+                break
 
-
-
-            # get the predictions
-            logits, loss = self(idx_pad, out_m, eng, eng_m, None)
-            # focus only on the last time step
-            logits = logits[:, len(idx_cond[0])-1, :] # becomes (B, C)
-            # apply softmax to get probabilities
-            probs = F.softmax(logits, dim=-1) # (B, C)
-
-
-            # sample from the distribution
-            idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
-
-            # append sampled index to the running sequence
-            idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
-
-            if idx_next == Config.END_TOK:
-              break
         return idx
