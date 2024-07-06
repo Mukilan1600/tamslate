@@ -25,10 +25,10 @@ def generate(str):
     out = [[Config.START_TOKEN]]
 
     out_txt = decode(model.generate(eng = torch.tensor([eng_ctx], dtype=torch.long, device=Config.device), eng_l = eng_l, idx = torch.tensor(out, dtype=torch.long, device=Config.device), max_new_tokens=256)[0].tolist())
-    with open("infer.txt", 'a') as f:
+    with open("./logs/infer.txt", 'a') as f:
             f.write(f"{out_txt}\n")
     print(out_txt)
 
 generate("mma vice president qazi hussain ahmad declared last month: 'we are not extremists.")
-generate("The weather is nice today")
+generate("This is india's industry")
 generate("Information has surfaced in recent years suggesting that Julius Rosenberg was involved in passing some form of intelligence to Soviet officials during the Second World War.")

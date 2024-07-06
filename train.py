@@ -39,12 +39,12 @@ if __name__=='__main__':
     ds = load_dataset("Hemanth-thunder/en_ta")
     
     print("Original size: ", ds['train'].num_rows)
-    encoded_ds = ds.filter(lambda x: sum([0 if i in vocab else 1 for i in x['en'].strip()])==0 and sum([0 if i in vocab else 1 for i in x['ta'].strip()]) == 0)
+    encoded_ds = ds.filter(lambda x: sum([0 if i in vocab else 1 for i in x['en'].strip()])==0 and sum([0 if i in vocab else 1 for i in x['ta'].strip()]) == 0, desc="Valid vocab")
     print("Filtered for valid characters: ", encoded_ds['train'].num_rows)
-    encoded_ds = encoded_ds.map(prepare_dataset)
-    encoded_ds = encoded_ds.filter(lambda x: len(x['en'])==Config.block_size and len(x['ta']) == Config.block_size)
+    encoded_ds = encoded_ds.map(prepare_dataset, desc="Encoding")
+    encoded_ds = encoded_ds.filter(lambda x: len(x['en'])==Config.block_size and len(x['ta']) == Config.block_size, desc="Block size")
     print("Filtered for block size: ", encoded_ds['train'].num_rows)
-    encoded_ds = encoded_ds.filter(lambda x,t: t <= Config.data_rows, with_indices=True)
+    encoded_ds = encoded_ds.filter(lambda x,t: int(t) < int(Config.data_rows), with_indices=True, desc="Data rows slimit")
     print("Filtered for total size: ", encoded_ds['train'].num_rows)
     
     encoded_ds = encoded_ds.with_format('torch')
@@ -95,7 +95,7 @@ if __name__=='__main__':
 
     model = BigramLanguageModel()
     model = model.to(Config.device)
-    # model = torch.compile(model)
+    model = torch.compile(model)
 
     print("---------------------------")
     # Print the model size and parameter size
@@ -111,6 +111,8 @@ if __name__=='__main__':
     print(f'Model size: {size_all_mb:.3f}MB, Params: {sum(p.numel() for p in model.parameters())/1e6}M ')
     print("---------------------------")
     print("".join([f"{v:18s}: {m}\n" for v, m in vars(Config).items() if not (v.startswith('_')  or callable(m))]))
+    with open("./logs/config.txt", "w") as f:
+        f.write("".join([f"{v:18s}: {m}\n" for v, m in vars(Config).items() if not (v.startswith('_')  or callable(m))]))
     print("---------------------------")
 
 
@@ -184,7 +186,7 @@ if __name__=='__main__':
                 losses = estimate_loss()
                 bleu = 0
                 print(f"Eval step {iter:4d} | train loss {losses['train']:.4f} | val loss {losses['validation']:.4f} | BLUE: {bleu:.4f}")
-                with open("loss_log.txt", 'a') as f:
+                with open("./logs/loss_log.txt", 'a') as f:
                     f.write(f"Eval step {iter:4d} | train loss {losses['train']:.4f} | val loss {losses['validation']:.4f} | BLUE: {bleu:.4f}\n")
 
                 checkpoint = {
@@ -199,11 +201,10 @@ if __name__=='__main__':
 
                 min_loss = losses['validation']
                 out_1 = decode(generate("mma vice president qazi hussain ahmad declared last month: 'we are not extremists."))
-                out_2 = decode(generate("Hello, how are you?"))
+                out_2 = decode(generate("Information has surfaced in recent years suggesting that Julius Rosenberg was involved in passing some form of intelligence to Soviet officials during the Second World War."))
 
-                with open("gen_log.txt", 'a') as f:
-                    f.write(f"Eval step {iter:4d} | Sample 1: {out_1}<|eos|>\n")
-                    f.write(f"Eval step {iter:4d} | Sample 2: {out_2}<|eos|>\n")
+                with open("./logs/gen_log.txt", 'a') as f:
+                    f.write(f"Eval step {iter:4d} | Sample 1: {out_1}<|eos|> | Sample 2: {out_2}<|eos|>\n")
             model.train()
 
         optimizer.zero_grad(set_to_none=True)
@@ -232,5 +233,5 @@ if __name__=='__main__':
         t1 = time.time()
         bck_dt = (t1 - t0) * 1000
         print(f"Step {iter:4d} | norm: {norm:.4f} | lr: {lr:.6f} | loss: {loss.item():.4f} | Data dt: {dl_dt:5.2f} | Forward dt: {fw_dt:5.2f} | Backward dt: {bck_dt:5.2f}")
-        with open("step_log.txt", 'a') as f:
+        with open("./logs/step_log.txt", 'a') as f:
             f.write(f"Step {iter:4d} | norm: {norm:.4f} | lr: {lr:.6f} | loss: {loss.item():.4f} | Data dt: {dl_dt:5.2f} | Forward dt: {fw_dt:5.2f} | Backward dt: {bck_dt:5.2f}\n")

@@ -127,30 +127,38 @@ class DecoderBlock(nn.Module):
         x = x + self.ffwd(self.ln3(x))
         return x
 
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=5000):
+class PositionalEmbedding(nn.Module):
+    def __init__(self, block_size, d_model):
         super().__init__()
-        self.pe = torch.zeros(max_len, d_model, device=Config.device)
-        position = torch.arange(0, max_len, dtype=torch.float, device=Config.device).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2, device=Config.device).float() * (-math.log(10000.0) / d_model))
-        self.pe[:, 0::2] = torch.sin(position * div_term)
-        self.pe[:, 1::2] = torch.cos(position * div_term)
-        self.pe = self.pe.unsqueeze(0).transpose(0, 1)
+        
+        # Create a long enough position encoding table
+        pe = torch.zeros(block_size, d_model)
+        position = torch.arange(0, block_size, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        
+        # Apply sine to even indices
+        pe[:, 0::2] = torch.sin(position * div_term)
+        # Apply cosine to odd indices
+        pe[:, 1::2] = torch.cos(position * div_term)
+        
+        # Register as a buffer (not a parameter)
+        self.register_buffer('pe', pe)
 
     def forward(self, x):
-        return x + self.pe[:x.size(0), :]
+        # x is expected to have shape (batch_size, seq_len, d_model)
+        return self.pe[:x.size(1), :]
 
 class Encoder(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
         self.input_emb = nn.Embedding(vocab_size, Config.n_embd)
-        self.positional_encoding = PositionalEncoding(Config.n_embd)
+        self.positional_encoding = PositionalEmbedding(Config.block_size, Config.n_embd)
         self.blocks = nn.Sequential(*[EncoderBlock() for _ in range(Config.n_layer)])
 
     def forward(self, x, mask):
         B, T = x.shape
-        x = self.input_emb(x) * math.sqrt(Config.n_embd)
-        x = self.positional_encoding(x.transpose(0, 1)).transpose(0, 1)
+        x = self.input_emb(x) * math.sqrt(Config.n_embd) # B, T, C
+        x = x + self.positional_encoding(x) # B, T, C + B, T
         for block in self.blocks:
             x = block(x, mask)
         return x
@@ -159,7 +167,7 @@ class Decoder(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
         self.input_emb = nn.Embedding(vocab_size, Config.n_embd)
-        self.positional_encoding = PositionalEncoding(Config.n_embd)
+        self.positional_encoding = PositionalEmbedding(Config.block_size, Config.n_embd)
         self.blocks = nn.Sequential(*[DecoderBlock() for _ in range(Config.n_layer)])
         self.ln_f = nn.LayerNorm(Config.n_embd)
         self.lm_head = nn.Linear(Config.n_embd, vocab_size)
@@ -167,7 +175,7 @@ class Decoder(nn.Module):
     def forward(self, x, x_mask, ca, ca_mask):
         B, T = x.shape
         x = self.input_emb(x) * math.sqrt(Config.n_embd)
-        x = self.positional_encoding(x.transpose(0, 1)).transpose(0, 1)
+        x = x + self.positional_encoding(x) # B, T, C + B, T
         for block in self.blocks:
             x = block(x, x_mask, ca, ca_mask)
         x = self.ln_f(x)
@@ -191,6 +199,17 @@ class BigramLanguageModel(nn.Module):
             targets = targets.view(B * T)
             loss = F.cross_entropy(logits, targets, ignore_index=Config.PAD_TOKEN)
         return logits, loss
+    
+    def _sample_top_p_(self, probs: torch.tensor) -> torch.tensor:
+        probs_sort, probs_idx = torch.sort(probs, dim=-1, descending=True)
+        probs_sum = torch.cumsum(probs_sort, dim=-1)
+        mask = (probs_sum - probs_sort) > Config.p
+        probs_sort[mask] = 0.0
+        probs_sort.div_(probs_sort.sum(dim=-1, keepdim=True))
+        idx_next = torch.multinomial(probs_sort, num_samples=1)
+        idx_next = torch.gather(probs_idx, -1, idx_next)
+
+        return idx_next
 
     def generate(self, eng, eng_l, idx, max_new_tokens):
         # Move idx to the correct device
@@ -200,6 +219,8 @@ class BigramLanguageModel(nn.Module):
             idx_cond = idx[:, -Config.block_size:]
             # Use torch.nn.functional.pad for padding
             idx_pad = F.pad(idx_cond, (0, Config.block_size - idx_cond.size(1)), value=Config.PAD_TOKEN)
+
+            print(eng)
             
             # Ensure masks are generated correctly
             eng_m, out_m, ca_m = generate_masks(eng, idx_pad)
@@ -210,7 +231,7 @@ class BigramLanguageModel(nn.Module):
             probs = F.softmax(logits, dim=-1)  # Apply softmax to get probabilities
             
             # Sample from the distribution
-            idx_next = torch.multinomial(probs, num_samples=1)
+            idx_next = self._sample_top_p_(probs)
             
             # Append sampled index to the running sequence
             idx = torch.cat((idx, idx_next), dim=1)
