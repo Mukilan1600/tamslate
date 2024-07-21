@@ -16,7 +16,7 @@ vocab = [*special_tokens, *sorted(list(set(string.ascii_letters) | {chr(i) for i
 kv = {v:k for k,v in enumerate(vocab)}
 vk = {k:v for k,v in enumerate(vocab)}
 
-encode = lambda s: [kv[c] for c in s] # encoder: take a string, output a list of integers
+encode = lambda s: [kv[c] for c in s if c in kv] # encoder: take a string, output a list of integers
 decode = lambda s: "".join([vk[c] for c in s]) # decoder: takes a list of encodings, output a string
 
 # hyperparameters
@@ -25,9 +25,10 @@ class Config:
     block_size = 256
     vocab_size = len(vocab)
     data_rows = 200000
-    epochs = 20
+    epochs = 400
     max_steps = (data_rows//batch_size) * epochs
-    eval_interval = 1000
+    eval_interval = 10000
+    step_interval = 100
     max_lr = 6e-4
     min_lr = 0.1 * max_lr
     warmup_steps = max_steps * 0.01
@@ -36,8 +37,8 @@ class Config:
     eval_iters = 100
     test_iters = 10
     n_embd = 512
-    n_head = 8
-    n_layer = 4
+    n_head = 4
+    n_layer = 2
     dropout = 0.1
     PAD_TOKEN = 0
     START_TOKEN = 1

@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from utils import Config, generate_masks
+from utils import Config, generate_masks, decode
 
 class SelfAttentionHead(nn.Module):
     """ one head of self-attention """
@@ -219,8 +219,6 @@ class BigramLanguageModel(nn.Module):
             idx_cond = idx[:, -Config.block_size:]
             # Use torch.nn.functional.pad for padding
             idx_pad = F.pad(idx_cond, (0, Config.block_size - idx_cond.size(1)), value=Config.PAD_TOKEN)
-
-            print(eng)
             
             # Ensure masks are generated correctly
             eng_m, out_m, ca_m = generate_masks(eng, idx_pad)
@@ -229,9 +227,11 @@ class BigramLanguageModel(nn.Module):
             logits, _ = self(idx_pad, out_m, eng, eng_m, ca_m)
             logits = logits[:, idx_cond.size(1) - 1, :]  # Focus on the last time step
             probs = F.softmax(logits, dim=-1)  # Apply softmax to get probabilities
-            
+
             # Sample from the distribution
             idx_next = self._sample_top_p_(probs)
+
+            print(decode(idx_next.tolist()[0]), end="")
             
             # Append sampled index to the running sequence
             idx = torch.cat((idx, idx_next), dim=1)

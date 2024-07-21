@@ -23,7 +23,7 @@ def prepare_dataset(x):
   '''Encode and pad each sentence in the dataset'''
   del x['Unnamed: 0']
 
-  en = encode(x['en'].strip().lower())
+  en = [Config.START_TOKEN, *encode(x['en'].strip().lower()), Config.END_TOK]
   ta = [Config.START_TOKEN, *encode(x['ta'].strip().lower()), Config.END_TOK]
 
   x['en'] = pad(en)
@@ -44,7 +44,7 @@ if __name__=='__main__':
     encoded_ds = encoded_ds.map(prepare_dataset, desc="Encoding")
     encoded_ds = encoded_ds.filter(lambda x: len(x['en'])==Config.block_size and len(x['ta']) == Config.block_size, desc="Block size")
     print("Filtered for block size: ", encoded_ds['train'].num_rows)
-    encoded_ds = encoded_ds.filter(lambda x,t: int(t) < int(Config.data_rows), with_indices=True, desc="Data rows slimit")
+    encoded_ds = encoded_ds.filter(lambda x,t: t+4 < int(Config.data_rows)+4, with_indices=True, desc="Data rows slimit")
     print("Filtered for total size: ", encoded_ds['train'].num_rows)
     
     encoded_ds = encoded_ds.with_format('torch')
@@ -167,7 +167,7 @@ if __name__=='__main__':
     def generate(str):
         eng_ctx = encode(str.lower())
         eng_l = torch.tensor([min(len(eng_ctx), Config.block_size)], dtype=torch.long, device=Config.device)
-        eng_ctx =  [*eng_ctx, *[Config.PAD_TOKEN for _ in range(Config.block_size-len(eng_ctx))]]
+        eng_ctx =  [Config.START_TOKEN, *eng_ctx, Config.END_TOK, *[Config.PAD_TOKEN for _ in range(Config.block_size-len(eng_ctx)-2)]]
 
         out = [[Config.START_TOKEN]]
 
@@ -232,6 +232,7 @@ if __name__=='__main__':
 
         t1 = time.time()
         bck_dt = (t1 - t0) * 1000
-        print(f"Step {iter:4d} | norm: {norm:.4f} | lr: {lr:.6f} | loss: {loss.item():.4f} | Data dt: {dl_dt:5.2f} | Forward dt: {fw_dt:5.2f} | Backward dt: {bck_dt:5.2f}")
-        with open("./logs/step_log.txt", 'a') as f:
-            f.write(f"Step {iter:4d} | norm: {norm:.4f} | lr: {lr:.6f} | loss: {loss.item():.4f} | Data dt: {dl_dt:5.2f} | Forward dt: {fw_dt:5.2f} | Backward dt: {bck_dt:5.2f}\n")
+        if iter % Config.step_interval == 0 or iter == Config.max_steps - 1:
+            print(f"Step {iter:4d} | norm: {norm:.4f} | lr: {lr:.6f} | loss: {loss.item():.4f} | Data dt: {dl_dt:5.2f} | Forward dt: {fw_dt:5.2f} | Backward dt: {bck_dt:5.2f}")
+            with open("./logs/step_log.txt", 'a') as f:
+                f.write(f"Step {iter:4d} | norm: {norm:.4f} | lr: {lr:.6f} | loss: {loss.item():.4f} | Data dt: {dl_dt:5.2f} | Forward dt: {fw_dt:5.2f} | Backward dt: {bck_dt:5.2f}\n")
