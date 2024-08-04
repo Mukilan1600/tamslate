@@ -44,7 +44,7 @@ class Config:
     START_TOKEN = 1
     END_TOK = 2
     CURRENT_ITER = 0
-    p = 0.9
+    p = 0.25
 # ------------
 
 

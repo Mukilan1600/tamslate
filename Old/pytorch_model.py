@@ -3,6 +3,8 @@ import torch.nn as nn
 from torch.nn import functional as F
 import math
 
+from utils import Config
+
 class PositionalEncoding(nn.Module):
     r"""Inject some information about the relative or absolute position of the tokens in the sequence.
         The positional encodings have the same dimension as the embeddings, so that the two can be summed.
@@ -48,15 +50,13 @@ class PositionalEncoding(nn.Module):
 class BigramLanguageModel(nn.Transformer):
     """Container module with an encoder, a recurrent or transformer module, and a decoder."""
 
-    def __init__(self, ntoken, ninp, nhead, nhid, nlayers, dropout=0.5):
-        super(BigramLanguageModel, self).__init__(d_model=ninp, nhead=nhead, dim_feedforward=nhid, num_encoder_layers=nlayers)
-        self.model_type = 'Transformer'
+    def __init__(self):
+        super(BigramLanguageModel, self).__init__(d_model=Config.block_size, nhead=Config.n_head, dim_feedforward=Config.n_embd * 4, num_encoder_layers=Config.n_layer, num_decoder_layers=Config.n_layer, batch_first=True)
         self.src_mask = None
-        self.pos_encoder = PositionalEncoding(ninp, dropout)
+        self.pos_encoder = PositionalEncoding(Config.n_embd, Config.dropout)
 
-        self.input_emb = nn.Embedding(ntoken, ninp)
-        self.ninp = ninp
-        self.decoder = nn.Linear(ninp, ntoken)
+        self.input_emb = nn.Embedding(Config.block_size, Config.n_embd)
+        self.ninp = Config.n_embd
 
         self.init_weights()
 
@@ -81,5 +81,5 @@ class BigramLanguageModel(nn.Transformer):
         src = self.input_emb(src) * math.sqrt(self.ninp)
         src = self.pos_encoder(src)
         output = self.encoder(src, mask=self.src_mask)
-        output = self.decoder(output)
-        return F.log_softmax(output, dim=-1)
+        output = self.decoder(output, mask)
+        return F.log_softmax(output, dim=-1) 

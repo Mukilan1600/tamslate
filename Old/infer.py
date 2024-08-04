@@ -23,15 +23,14 @@ def generate(str):
     eng_ctx =  [Config.START_TOKEN ,*eng_ctx, Config.END_TOK, *[Config.PAD_TOKEN for _ in range(Config.block_size-len(eng_ctx)-2)]]
 
     out = [[Config.START_TOKEN]]
+    with torch.no_grad():
+        out_txt = decode(model.generate(eng = torch.tensor([eng_ctx], dtype=torch.long, device=Config.device), eng_l = eng_l, idx = torch.tensor(out, dtype=torch.long, device=Config.device), max_new_tokens=256)[0].tolist()[1:-1])
 
-    out_txt = decode(model.generate(eng = torch.tensor([eng_ctx], dtype=torch.long, device=Config.device), eng_l = eng_l, idx = torch.tensor(out, dtype=torch.long, device=Config.device), max_new_tokens=256)[0].tolist())
-    with open("./logs/infer.txt", 'a') as f:
-            f.write(f"{out_txt}\n")
-    # print(out_txt)
-
+    return out_txt
 
 if __name__=="__main__":
-    generate("mma vice president qazi hussain ahmad declared last month: 'we are not extremists.")
-    generate("This is india's industry")
-    generate("United states of America bombed japan")
-    generate("You look ugly")
+    with open("./test/news.txt", 'r') as f, open("./test/news-out.txt", 'w') as o:
+        for line in f.readlines():
+            out = generate(line.strip())
+            o.write(f"{line.strip()};{out}\n")
+            print()
