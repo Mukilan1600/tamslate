@@ -27,7 +27,7 @@ def generate(str):
     return out_txt
 
 out_1 = decode(generate("mma vice president qazi hussain ahmad declared last month: 'we are not extremists."))
-out_2 = decode(generate("Information has surfaced in recent years suggesting that Julius Rosenberg was involved in passing some form of intelligence to Soviet officials during the Second World War."))
+out_2 = ""#decode(generate("Information has surfaced in recent years suggesting that Julius Rosenberg was involved in passing some form of intelligence to Soviet officials during the Second World War."))
 
 with open("./logs/inf_log.txt", 'a') as f:
     f.write(f"Sample 1: {out_1}<|eos|> | Sample 2: {out_2}<|eos|>\n")

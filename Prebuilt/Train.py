@@ -28,7 +28,7 @@ def prepare_dataset(x):
   '''Encode and pad each sentence in the dataset'''
   del x['Unnamed: 0']
 
-  en = [Config.START_TOKEN, *encode(x['en'].strip().lower()), Config.END_TOK]
+  en = [*encode(x['en'].strip().lower())]
   ta = [Config.START_TOKEN, *encode(x['ta'].strip().lower()), Config.END_TOK]
 
   x['en'] = pad(en)
@@ -167,7 +167,7 @@ if __name__=='__main__':
                 else:
                     batch = val_dl.get_next_batch()
                 
-                logits, loss = model(batch.input, batch.output, None, batch.in_mask, None, batch.out_mask, batch.in_mask, batch.targets)
+                logits, loss = model(batch.input, batch.output, None, batch.in_mask, None, batch.out_mask, batch.in_mask,targets=batch.targets)
                 losses[k] = loss.item()
             out[split] = losses.mean()
         return out
@@ -177,7 +177,7 @@ if __name__=='__main__':
     @torch.no_grad()
     def generate(str):
         src = encode(str.lower())
-        src =  [Config.START_TOKEN, *src, Config.END_TOK, *[Config.PAD_TOKEN for _ in range(Config.block_size-len(src)-2)]]
+        src =  [*src, *[Config.PAD_TOKEN for _ in range(Config.block_size-len(src))]]
 
         out = [[Config.START_TOKEN]]
 
@@ -204,10 +204,11 @@ if __name__=='__main__':
                     'state_dict': deepcopy(model.state_dict()),
                     'optimizer': optimizer.state_dict()
                 }
-                if losses['validation'] <= min_loss:
-                    save_ckp(checkpoint, True, f'./checkpoint/iter_{iter}_model.pt', best_model_path)
-                else:
-                    save_ckp(checkpoint, False, f'./checkpoint/iter_{iter}_model.pt', best_model_path)
+                if iter % Config.save_iter == 0 or iter == Config.max_steps - 1:
+                    if losses['validation'] <= min_loss:
+                        save_ckp(checkpoint, True, f'./checkpoint/iter_{iter}_model.pt', best_model_path)
+                    else:
+                        save_ckp(checkpoint, False, f'./checkpoint/iter_{iter}_model.pt', best_model_path)
 
                 min_loss = losses['validation']
                 out_1 = decode(generate("mma vice president qazi hussain ahmad declared last month: 'we are not extremists."))
@@ -226,8 +227,8 @@ if __name__=='__main__':
         t0 = time.time()
 
         with torch.autocast(device_type=Config.device, dtype=torch.bfloat16):
-            # evaluate the loss
-            logits, loss = model(batch.input, batch.output, None, batch.in_mask, None, batch.out_mask, batch.in_mask, batch.targets)
+            # evaluate the loss: self, src, tgt, src_mask, src_padding_mask, tgt_mask, tgt_padding_mask, mem_padding_mask, targets
+            logits, loss = model(batch.input, batch.output, None, batch.in_mask, None, batch.out_mask, batch.in_mask,targets=batch.targets)
 
         torch.cuda.synchronize()
         fw_dt = (time.time() - t0) * 1000
@@ -248,3 +249,9 @@ if __name__=='__main__':
             print(f"Step {iter:4d} | norm: {norm:.4f} | lr: {lr:.6f} | loss: {loss.item():.4f} | Data dt: {dl_dt:5.2f} | Forward dt: {fw_dt:5.2f} | Backward dt: {bck_dt:5.2f}")
             with open("./logs/step_log.txt", 'a') as f:
                 f.write(f"Step {iter:4d} | norm: {norm:.4f} | lr: {lr:.6f} | loss: {loss.item():.4f} | Data dt: {dl_dt:5.2f} | Forward dt: {fw_dt:5.2f} | Backward dt: {bck_dt:5.2f}\n")
+
+    # sample a batch of data
+    batch = train_dl.get_next_batch()
+    
+    # Visualize attention and save the plot
+    model.visualize_attention(batch.input, batch.output, batch.in_mask, batch.out_mask, batch.ca_mask, output_dir='my_attention_plots')

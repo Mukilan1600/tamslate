@@ -24,4 +24,4 @@ def generate_masks(src, tgt):
         src_m = src == Config.PAD_TOKEN
         tgt_m = tgt == Config.PAD_TOKEN
 
-        return src_m, tgt_m, src_m
+        return src_m, tgt_m, None
