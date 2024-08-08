@@ -1,11 +1,11 @@
 from pathlib import Path
 import time
+import os, shutil
+import math
+
 from datasets import load_dataset
 from collections import namedtuple
-from threading import Thread
-from queue import Queue
 import torch
-import math
 
 from Model import MTModel
 from Vocabulary import decode, encode, vocab
@@ -38,7 +38,29 @@ def prepare_dataset(x):
 
   return x
 
+@torch.no_grad()
+def generate(str, model):
+    src = encode(str.lower())
+    src =  [*src, *[Config.PAD_TOKEN for _ in range(Config.block_size-len(src))]]
+
+    out = [[Config.START_TOKEN]]
+
+    out_txt = model.generate(torch.tensor([src], dtype=torch.long, device=Config.device), torch.tensor(out, dtype=torch.long, device=Config.device), max_new_tokens=256)[0].tolist()
+    return out_txt
+
 if __name__=='__main__':
+    
+    if not Config.Continue:
+        print('[i] Deleting previous logs and checkpoints')
+        file_paths = [*[os.path.join('./logs', i) for i in os.listdir('./logs')], *[os.path.join('./checkpoint', i) for i in os.listdir('./checkpoint')]]
+        for file_path in file_paths:
+            try:
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.unlink(file_path)
+                elif os.path.isdir(file_path):
+                    shutil.rmtree(file_path)
+            except Exception as e:
+                print('Failed to delete %s. Reason: %s' % (file_path, e))
    
     # Load dataset from Huggingface
     ds = load_dataset("Hemanth-thunder/en_ta")
@@ -57,47 +79,44 @@ if __name__=='__main__':
     
 
 
-    class DataLoader:
-        '''Optimized dataloader class to load batch of sentences'''
-        DataBatch = namedtuple('DataBatch', ['input', 'in_mask', 'output', 'out_mask', 'ca_mask', 'targets'])
-
+    class DataLoader():
+        '''Lite dataloader class to load batch of sentences'''
+        DataBatch = namedtuple('DataBatch', ['output', 'out_mask', 'input', 'in_mask', 'ca_mask', 'targets'])
         def __init__(self, split, current_batch=0):
             self.split = split
             self.dataset = dataset[split]
-            self.current_batch = current_batch % (self.dataset.num_rows // Config.batch_size)
-            self.queue = Queue(maxsize=2)
-            self.thread = Thread(target=self._prefetch_batches)
-            self.thread.daemon = True
-            self.thread.start()
-
-        def _prefetch_batches(self):
-            while True:
-                idx = self.current_batch * Config.batch_size
-                src = self.dataset[idx:idx + Config.batch_size]['en']
-                tgt = self.dataset[idx:idx + Config.batch_size]['ta']
-
-                src_m, tgt_m, ca_m = generate_masks(src, tgt)
-
-                ta_padding = torch.full((Config.batch_size, 1), Config.PAD_TOKEN, device=Config.device)
-                y = torch.cat((tgt[:, 1:], ta_padding), dim=1)
-
-                self.current_batch = (self.current_batch + 1) % (self.dataset.num_rows // Config.batch_size)
-
-                batch = self.DataBatch(src, src_m, tgt, tgt_m, ca_m, y)
-                self.queue.put(batch)
+            self.current_batch = (current_batch) % (self.dataset.num_rows//Config.batch_size)
 
         def get_next_batch(self):
-            return self.queue.get()
+            idx = self.current_batch * Config.batch_size
+            xi = self.dataset[idx : idx + Config.batch_size]['en']
+            xo = self.dataset[idx : idx + Config.batch_size]['ta']
 
+            xi, xo = xi.to(Config.device), xo.to(Config.device)
+
+            e_m, t_m, ca_m = generate_masks(xi, xo)
+
+            ta_padding = torch.full((Config.batch_size, 1), Config.PAD_TOKEN, device=Config.device)
+            y = torch.cat((xo[:, 1:], ta_padding), dim=1)
+
+            self.current_batch = (self.current_batch + 1) % (self.dataset.num_rows//Config.batch_size)
+
+            if self.current_batch == 0:
+                shuffled_ds = encoded_ds.shuffle()
+                self.dataset = shuffled_ds[self.split]
+
+            return DataLoader.DataBatch(xo, t_m, xi, e_m, ca_m, y)
+        
         def get_test_batch(self):
             idx = self.current_batch
             xi = self.dataset[idx]['en'].tolist()
             xo = self.dataset[idx]['ta'].tolist()
             
-            self.current_batch = (self.current_batch + 1) % self.dataset.num_rows
+            self.current_batch = (self.current_batch + 1) % (self.dataset.num_rows)
             
             if self.current_batch == 0:
-                self.dataset = self.dataset.shuffle()
+                shuffled_ds = encoded_ds.shuffle()
+                self.dataset = shuffled_ds[self.split]
 
             return (xi, xo)
     
@@ -174,16 +193,6 @@ if __name__=='__main__':
 
     from copy import deepcopy
 
-    @torch.no_grad()
-    def generate(str):
-        src = encode(str.lower())
-        src =  [*src, *[Config.PAD_TOKEN for _ in range(Config.block_size-len(src))]]
-
-        out = [[Config.START_TOKEN]]
-
-        out_txt = model.generate(torch.tensor([src], dtype=torch.long, device=Config.device), torch.tensor(out, dtype=torch.long, device=Config.device), max_new_tokens=256)[0].tolist()
-        return out_txt
-
     min_loss = 999
     for iter in range(start_epoch, Config.max_steps):
 
@@ -211,8 +220,8 @@ if __name__=='__main__':
                         save_ckp(checkpoint, False, f'./checkpoint/iter_{iter}_model.pt', best_model_path)
 
                 min_loss = losses['validation']
-                out_1 = decode(generate("mma vice president qazi hussain ahmad declared last month: 'we are not extremists."))
-                out_2 = decode(generate("Information has surfaced in recent years suggesting that Julius Rosenberg was involved in passing some form of intelligence to Soviet officials during the Second World War."))
+                out_1 = decode(generate("mma vice president qazi hussain ahmad declared last month: 'we are not extremists.", model))
+                out_2 = decode(generate("Information has surfaced in recent years suggesting that Julius Rosenberg was involved in passing some form of intelligence to Soviet officials during the Second World War.", model))
 
                 with open("./logs/gen_log.txt", 'a') as f:
                     f.write(f"Eval step {iter:4d} | Sample 1: {out_1}<|eos|> | Sample 2: {out_2}<|eos|>\n")
@@ -227,7 +236,7 @@ if __name__=='__main__':
         t0 = time.time()
 
         with torch.autocast(device_type=Config.device, dtype=torch.bfloat16):
-            # evaluate the loss: self, src, tgt, src_mask, src_padding_mask, tgt_mask, tgt_padding_mask, mem_padding_mask, targets
+        # evaluate the loss: self, src, tgt, src_mask, src_padding_mask, tgt_mask, tgt_padding_mask, mem_padding_mask, targets
             logits, loss = model(batch.input, batch.output, None, batch.in_mask, None, batch.out_mask, batch.in_mask,targets=batch.targets)
 
         torch.cuda.synchronize()

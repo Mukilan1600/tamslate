@@ -14,17 +14,6 @@ from Blocks import TransformerDecoderLayer
 from Vocabulary import decode
 from Utils import generate_masks
 
-class MultiheadAttentionWithWeights(nn.MultiheadAttention):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.attn_weights = None
-
-    def forward(self, *args, **kwargs):
-        vargs = dict(kwargs, need_weights=True)
-        output, weights = super().forward(*args, **vargs)
-        self.attn_weights = weights
-        return output, weights
-
 class PositionalEncoding(nn.Module):
     r"""Inject some information about the relative or absolute position of the tokens in the sequence.
         The positional encodings have the same dimension as the embeddings, so that the two can be summed.
@@ -71,49 +60,8 @@ class PositionalEncoding(nn.Module):
 
 
 class TransformerModel(nn.Module):
+    
     """Container module with an encoder, a recurrent or transformer module, and a decoder."""
-
-    def _detect_is_causal_mask(
-        self,
-        mask,
-        is_causal,
-        size,
-    ) -> bool:
-        """Return whether the given attention mask is causal.
-
-        Warning:
-        If ``is_causal`` is not ``None``, its value will be returned as is.  If a
-        user supplies an incorrect ``is_causal`` hint,
-
-        ``is_causal=False`` when the mask is in fact a causal attention.mask
-        may lead to reduced performance relative to what would be achievable
-        with ``is_causal=True``;
-        ``is_causal=True`` when the mask is in fact not a causal attention.mask
-        may lead to incorrect and unpredictable execution - in some scenarios,
-        a causal mask may be applied based on the hint, in other execution
-        scenarios the specified mask may be used.  The choice may not appear
-        to be deterministic, in that a number of factors like alignment,
-        hardware SKU, etc influence the decision whether to use a mask or
-        rely on the hint.
-        ``size`` if not None, check whether the mask is a causal mask of the provided size
-        Otherwise, checks for any causal mask.
-        """
-        # Prevent type refinement
-        make_causal = (is_causal is True)
-
-        if is_causal is None and mask is not None:
-            sz = size if size is not None else mask.size(-2)
-            causal_comparison = nn.Transformer.generate_square_subsequent_mask(sz, device=mask.device, dtype=mask.dtype)
-
-            # Do not use `torch.equal` so we handle batched masks by
-            # broadcasting the comparison.
-            if mask.size() == causal_comparison.size():
-                make_causal = bool((mask == causal_comparison).all())
-            else:
-                make_causal = False
-
-        return make_causal
-
     def __init__(self, vocab_size, n_embed, n_head, n_ff, n_layers, dropout):
         
         super().__init__()
@@ -131,21 +79,41 @@ class TransformerModel(nn.Module):
         self.n_embed = n_embed
         
         self.ln = nn.Linear(n_embed, vocab_size)
+        
+        self.init_weights()
+    
+    def init_weights(self):
+        initrange = 0.1
+        nn.init.uniform_(self.src_input_emb.weight, -initrange, initrange)
+        nn.init.uniform_(self.tgt_input_emb.weight, -initrange, initrange)
+        nn.init.zeros_(self.ln.bias)
+        nn.init.uniform_(self.ln.weight, -initrange, initrange)
+        
 
 
     def forward(self, src, tgt, src_mask, src_padding_mask, tgt_mask, tgt_padding_mask, mem_padding_mask, memory_mask=None): 
-        src = self.src_input_emb(src) * math.sqrt(self.n_embed)
-        tgt = self.tgt_input_emb(tgt) * math.sqrt(self.n_embed)
         
+        memory = self._encode(src, src_mask, src_padding_mask)
+        output = self._decode(tgt, tgt_mask, tgt_padding_mask, memory_mask, mem_padding_mask, memory)
+        
+        return output
+    
+    def _encode(self, src, src_mask, src_padding_mask):
+        src = self.src_input_emb(src) * math.sqrt(self.n_embed)
         src = self.pos_encoder(src)
+        memory = self.encoder(src=src, mask=src_mask, src_key_padding_mask=src_padding_mask)
+        
+        return memory
+    
+    def _decode(self, tgt, tgt_mask, tgt_padding_mask, memory_mask, mem_padding_mask, memory):
+        tgt = self.tgt_input_emb(tgt) * math.sqrt(self.n_embed)        
         tgt = self.pos_encoder(tgt)
         
-        memory = self.encoder(src=src, mask=src_mask, src_key_padding_mask=src_padding_mask)
-        # forward(tgt, memory, tgt_mask=None, memory_mask=None, tgt_key_padding_mask=None, memory_key_padding_mask=None, tgt_is_causal=None, memory_is_causal=False)
-        output = self.decoder(tgt=tgt, memory=memory, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_padding_mask, memory_key_padding_mask=None, memory_mask=memory_mask)
+        output = self.decoder(tgt=tgt, memory=memory, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_padding_mask, memory_key_padding_mask=mem_padding_mask, memory_mask=memory_mask)
         output = self.ln(output)
         
         return output
+        
     
     
 class MTModel(nn.Module):
@@ -187,34 +155,48 @@ class MTModel(nn.Module):
 
         return idx_next
     
-    def generate(self, src, tgt, max_new_tokens):
- 
+    def generate(self, src, tgt, max_new_tokens, beam_size=5):
+        batch_size = src.size(0)
+        
+        src_m, _, __ = generate_masks(src, tgt)
+        memory = self.transformer._encode(src, None, src_m)
+
+        # Initialize the beam
+        beam = [{'sequence': tgt, 'score': 0.0}] * batch_size
+
         for i in range(max_new_tokens):
-            tgt = tgt[:, -self.config.block_size:]
-            # Use torch.nn.functional.pad for padding
-            tgt_pad = F.pad(tgt, (0, self.config.block_size - tgt.size(1)), value=self.config.PAD_TOKEN)
-            
-            # Ensure masks are generated correctly
-            src_m, tgt_m, ca_m = generate_masks(src, tgt_pad)
-            # Get the predictions; src, tgt, src_mask, src_padding_mask, tgt_mask, tgt_padding_mask, mem_padding_mask, targets = None
-            logits, _ = self(src, tgt_pad, None, src_m, None, tgt_m, src_m)
-            logits = logits[:, tgt.size(1) - 1, :]  # Focus on the last time step
+            new_beam = []
+            for b in beam:
+                sequence = b['sequence']
+                score = b['score']
 
+                sequence = sequence[:, -self.config.block_size:]
+                sequence_pad = F.pad(sequence, (0, self.config.block_size - sequence.size(1)), value=self.config.PAD_TOKEN)
 
-            probs = F.softmax(logits, dim=-1)  # Apply softmax to get probabilities
+                # Ensure masks are generated correctly
+                src_m, tgt_m, ca_m = generate_masks(src, sequence_pad)
+                logits = self.transformer._decode(sequence_pad, None, tgt_m, None, None, memory)
+                logits = logits[:, sequence.size(1) - 1, :]
 
+                probs = F.softmax(logits, dim=-1)
+                top_probs, top_indices = torch.topk(probs, beam_size, dim=-1)
 
-            # Sample from the distribution
-            tgt_next = self._sample_top_p_(probs)
-            
-            # Append sampled index to the running sequence
-            tgt = torch.cat((tgt, tgt_next), dim=1)
-            
+                for j in range(beam_size):
+                    new_sequence = torch.cat((sequence, top_indices[:, j].unsqueeze(1)), dim=1)
+                    new_score = score - torch.log(top_probs[:, j])
+                    new_beam.append({'sequence': new_sequence, 'score': new_score})
+
+            # Sort the beam and keep the top beam_size sequences
+            new_beam = sorted(new_beam, key=lambda x: x['score'])
+            beam = new_beam[:beam_size]
+
             # Check for end token
-            if (tgt_next == Config.END_TOK).all():
+            if all(b['sequence'][:, -1] == Config.END_TOK for b in beam):
                 break
 
-        return tgt
+        # Return the sequence with the highest score
+        return beam[0]['sequence']
+
 
     def visualize_attention(self, src, tgt, src_m, tgt_m, ca_m, output_dir='attention_plots', filename='attention_plot'):
         self.eval()

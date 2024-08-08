@@ -14,8 +14,8 @@ class Config:
     max_steps = (data_rows//batch_size) * epochs
     eval_interval = 500
     save_iter = 1500
-    step_interval = 50
-    max_lr = 6e-4
+    step_interval = 5
+    max_lr = 3e-4
     min_lr = 0.1 * max_lr
     warmup_steps = max_steps * 0.01
     decay_steps = max_steps * 0.95
@@ -29,6 +29,6 @@ class Config:
     PAD_TOKEN = 0
     START_TOKEN = 1
     END_TOK = 2
-    p = 0.9
-    CONTIUE = False
+    p = 0.95
+    Continue = False
 # ------------
