@@ -155,9 +155,10 @@ class MTModel(nn.Module):
 
         return idx_next
     
-    def generate(self, src, tgt, max_new_tokens, beam_size=5):
+    def generate(self, src, tgt, max_new_tokens, beam_size=1):
         batch_size = src.size(0)
         
+        tgt_mask = nn.Transformer.generate_square_subsequent_mask(self.config.block_size, device=Config.device, dtype=bool)
         src_m, _, __ = generate_masks(src, tgt)
         memory = self.transformer._encode(src, None, src_m)
 
@@ -175,7 +176,7 @@ class MTModel(nn.Module):
 
                 # Ensure masks are generated correctly
                 src_m, tgt_m, ca_m = generate_masks(src, sequence_pad)
-                logits = self.transformer._decode(sequence_pad, None, tgt_m, None, None, memory)
+                logits = self.transformer._decode(sequence_pad, tgt_mask, tgt_m, None, src_m, memory)
                 logits = logits[:, sequence.size(1) - 1, :]
 
                 probs = F.softmax(logits, dim=-1)
@@ -183,15 +184,15 @@ class MTModel(nn.Module):
 
                 for j in range(beam_size):
                     new_sequence = torch.cat((sequence, top_indices[:, j].unsqueeze(1)), dim=1)
-                    new_score = score - torch.log(top_probs[:, j])
+                    new_score = score + torch.log(top_probs[:, j])
                     new_beam.append({'sequence': new_sequence, 'score': new_score})
 
             # Sort the beam and keep the top beam_size sequences
-            new_beam = sorted(new_beam, key=lambda x: x['score'])
+            new_beam = sorted(new_beam, key=lambda x: x['score'], reverse=True)
             beam = new_beam[:beam_size]
 
-            # Check for end token
-            if all(b['sequence'][:, -1] == Config.END_TOK for b in beam):
+            # Check if the best sequence has reached the end token
+            if beam[0]['sequence'][:, -1].item() == Config.END_TOK:
                 break
 
         # Return the sequence with the highest score

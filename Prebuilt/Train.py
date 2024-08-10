@@ -28,7 +28,7 @@ def prepare_dataset(x):
   '''Encode and pad each sentence in the dataset'''
   del x['Unnamed: 0']
 
-  en = [*encode(x['en'].strip().lower())]
+  en = [Config.START_TOKEN, *encode(x['en'].strip().lower()), Config.END_TOK]
   ta = [Config.START_TOKEN, *encode(x['ta'].strip().lower()), Config.END_TOK]
 
   x['en'] = pad(en)
@@ -41,7 +41,7 @@ def prepare_dataset(x):
 @torch.no_grad()
 def generate(str, model):
     src = encode(str.lower())
-    src =  [*src, *[Config.PAD_TOKEN for _ in range(Config.block_size-len(src))]]
+    src =  [Config.START_TOKEN, *src, Config.END_TOK, *[Config.PAD_TOKEN for _ in range(Config.block_size-len(src)-2)]]
 
     out = [[Config.START_TOKEN]]
 
@@ -186,7 +186,7 @@ if __name__=='__main__':
                 else:
                     batch = val_dl.get_next_batch()
                 
-                logits, loss = model(batch.input, batch.output, None, batch.in_mask, None, batch.out_mask, batch.in_mask,targets=batch.targets)
+                logits, loss = model(batch.input, batch.output, None, batch.in_mask, None, batch.out_mask, batch.in_mask, targets=batch.targets)
                 losses[k] = loss.item()
             out[split] = losses.mean()
         return out
@@ -237,7 +237,7 @@ if __name__=='__main__':
 
         with torch.autocast(device_type=Config.device, dtype=torch.bfloat16):
         # evaluate the loss: self, src, tgt, src_mask, src_padding_mask, tgt_mask, tgt_padding_mask, mem_padding_mask, targets
-            logits, loss = model(batch.input, batch.output, None, batch.in_mask, None, batch.out_mask, batch.in_mask,targets=batch.targets)
+            logits, loss = model(batch.input, batch.output, None, batch.in_mask, None, batch.out_mask, batch.in_mask, targets=batch.targets)
 
         torch.cuda.synchronize()
         fw_dt = (time.time() - t0) * 1000

@@ -7,8 +7,8 @@ max_steps         : 624800
 eval_interval     : 500
 save_iter         : 1500
 step_interval     : 5
-max_lr            : 0.0003
-min_lr            : 2.9999999999999997e-05
+max_lr            : 0.00015
+min_lr            : 1.4999999999999999e-05
 warmup_steps      : 6248.0
 decay_steps       : 593560.0
 device            : cuda
@@ -22,4 +22,4 @@ PAD_TOKEN         : 0
 START_TOKEN       : 1
 END_TOK           : 2
 p                 : 0.95
-Continue          : False
+Continue          : True

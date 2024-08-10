@@ -15,7 +15,7 @@ class Config:
     eval_interval = 500
     save_iter = 1500
     step_interval = 5
-    max_lr = 3e-4
+    max_lr = 15e-5
     min_lr = 0.1 * max_lr
     warmup_steps = max_steps * 0.01
     decay_steps = max_steps * 0.95
@@ -30,5 +30,5 @@ class Config:
     START_TOKEN = 1
     END_TOK = 2
     p = 0.95
-    Continue = False
+    Continue = True
 # ------------

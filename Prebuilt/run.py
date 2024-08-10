@@ -16,7 +16,7 @@ best_model_path = "./checkpoint/best_model.pt"
 checkpoint_file = Path(best_model_path)
 if checkpoint_file.is_file():
     model, optimizer, start_epoch = load_ckp(best_model_path, model, None)
-    print(f"Module loaded")
+    print(f"Module loaded, epoch: {start_epoch}")
 model.eval()
 while True:
     s = input("Enter english: ").strip()
